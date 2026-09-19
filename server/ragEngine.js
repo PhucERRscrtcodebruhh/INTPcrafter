@@ -7,7 +7,12 @@ export class RAGEngine {
   /**
    * Scans prompt and up to 3 recent messages to retrieve relevant lore
    */
-  static async retrieveLore({ currentPrompt, recentMessages = [], maxResults = 5 }) {
+  static async retrieveLore({ currentPrompt, recentMessages = [], maxResults = 5, bookId = null }) {
+    // If session is not linked to any book, return empty RAG context
+    if (!bookId) {
+      return { retrievedLore: [], formattedContext: '', retrievedLoreIds: '' };
+    }
+
     // Combine current prompt and up to 3 previous messages
     const textPool = [
       currentPrompt || '',
@@ -19,8 +24,11 @@ export class RAGEngine {
     }
 
     try {
-      // 1. First, fetch all titles and aliases for direct mention matching
-      const [allEntries] = await pool.query(`SELECT id, category, title, aliases, content, rules FROM lore_entries`);
+      // 1. First, fetch all titles and aliases for direct mention matching in this specific book
+      const [allEntries] = await pool.query(
+        `SELECT id, book_id, category, title, aliases, content, rules FROM lore_entries WHERE book_id = ?`,
+        [bookId]
+      );
       const matchedMap = new Map();
 
       const lowerText = textPool.toLowerCase();
@@ -44,21 +52,21 @@ export class RAGEngine {
         }
       }
 
-      // 2. Perform Keyword / Fulltext Search on Content
+      // 2. Perform Keyword / Fulltext Search on Content within this book
       const searchTerms = this.extractSearchTerms(currentPrompt);
       if (searchTerms.length > 0 && matchedMap.size < maxResults) {
         const fulltextQuery = searchTerms.join(' ');
         
         try {
-          // Attempt MySQL Natural Language Fulltext query
+          // Attempt MySQL Natural Language Fulltext query scoped to book_id
           const [ftRows] = await pool.query(
-            `SELECT id, category, title, aliases, content, rules,
+            `SELECT id, book_id, category, title, aliases, content, rules,
                     MATCH(content) AGAINST(? IN NATURAL LANGUAGE MODE) as relevance
              FROM lore_entries
-             WHERE MATCH(content) AGAINST(? IN NATURAL LANGUAGE MODE) > 0.01
+             WHERE book_id = ? AND MATCH(content) AGAINST(? IN NATURAL LANGUAGE MODE) > 0.01
              ORDER BY relevance DESC
              LIMIT ?`,
-            [fulltextQuery, fulltextQuery, maxResults]
+            [fulltextQuery, bookId, fulltextQuery, maxResults]
           );
 
           for (const row of ftRows) {
@@ -74,11 +82,11 @@ export class RAGEngine {
           // Fallback to LIKE query if fulltext index is not available or query errors
           const likePattern = `%${searchTerms[0]}%`;
           const [likeRows] = await pool.query(
-            `SELECT id, category, title, aliases, content, rules
+            `SELECT id, book_id, category, title, aliases, content, rules
              FROM lore_entries
-             WHERE title LIKE ? OR aliases LIKE ? OR content LIKE ?
+             WHERE book_id = ? AND (title LIKE ? OR aliases LIKE ? OR content LIKE ?)
              LIMIT ?`,
-            [likePattern, likePattern, likePattern, maxResults]
+            [bookId, likePattern, likePattern, likePattern, maxResults]
           );
 
           for (const row of likeRows) {

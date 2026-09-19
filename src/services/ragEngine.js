@@ -1,7 +1,14 @@
 import { api } from './api';
 
 export const ClientRAGService = {
-  async getLorebook(category, search) {
+  async getLorebook(bookId, category, search) {
+    if (typeof bookId === 'string' && isNaN(Number(bookId))) {
+      // Backward compatibility if called with (category, search)
+      return await api.getLore({ category: bookId, search: category });
+    }
+    if (bookId) {
+      return await api.getBookEntries(bookId, { category, search });
+    }
     return await api.getLore({ category, search });
   },
 

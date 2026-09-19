@@ -51,10 +51,11 @@ app.get('/api/sessions', optionalAuth, async (req, res) => {
     if (userId > 0) {
       // Registered user: show only their sessions
       [sessions] = await pool.query(
-        `SELECT s.id, s.title, s.user_id, s.created_at, 
+        `SELECT s.id, s.title, s.user_id, s.book_id, b.title as book_title, s.created_at, 
                 COUNT(m.id) as message_count,
                 MAX(m.created_at) as last_message_at
          FROM chat_sessions s
+         LEFT JOIN lore_books b ON s.book_id = b.id
          LEFT JOIN chat_messages m ON s.id = m.session_id
          WHERE s.user_id = ?
          GROUP BY s.id
@@ -64,10 +65,11 @@ app.get('/api/sessions', optionalAuth, async (req, res) => {
     } else {
       // Dev/anonymous: show sessions with NULL or 0 user_id
       [sessions] = await pool.query(
-        `SELECT s.id, s.title, s.user_id, s.created_at, 
+        `SELECT s.id, s.title, s.user_id, s.book_id, b.title as book_title, s.created_at, 
                 COUNT(m.id) as message_count,
                 MAX(m.created_at) as last_message_at
          FROM chat_sessions s
+         LEFT JOIN lore_books b ON s.book_id = b.id
          LEFT JOIN chat_messages m ON s.id = m.session_id
          WHERE s.user_id IS NULL OR s.user_id = 0
          GROUP BY s.id
@@ -85,11 +87,12 @@ app.post('/api/sessions', optionalAuth, async (req, res) => {
     const userId = req.user?.id || 0;
     const id = `session_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
     const title = (req.body.title || 'Untitled Chronicle').trim();
+    const bookId = req.body.book_id ? parseInt(req.body.book_id, 10) : null;
     await pool.query(
-      `INSERT INTO chat_sessions (id, title, user_id) VALUES (?, ?, ?)`,
-      [id, title, userId > 0 ? userId : null]
+      `INSERT INTO chat_sessions (id, title, user_id, book_id) VALUES (?, ?, ?, ?)`,
+      [id, title, userId > 0 ? userId : null, bookId]
     );
-    res.status(201).json({ id, title, user_id: userId, created_at: new Date() });
+    res.status(201).json({ id, title, user_id: userId, book_id: bookId, created_at: new Date() });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -97,10 +100,39 @@ app.post('/api/sessions', optionalAuth, async (req, res) => {
 
 app.put('/api/sessions/:id', optionalAuth, async (req, res) => {
   try {
-    const { title } = req.body;
-    if (!title) return res.status(400).json({ error: 'Title required' });
-    await pool.query(`UPDATE chat_sessions SET title = ? WHERE id = ?`, [title.trim(), req.params.id]);
-    res.json({ success: true, id: req.params.id, title });
+    const { title, book_id } = req.body;
+    const sessionId = req.params.id;
+
+    // Build update query dynamically
+    const fields = [];
+    const values = [];
+
+    if (title !== undefined && title.trim()) {
+      fields.push('title = ?');
+      values.push(title.trim());
+    }
+    if (book_id !== undefined) {
+      fields.push('book_id = ?');
+      values.push(book_id ? parseInt(book_id, 10) : null);
+    }
+
+    if (fields.length === 0) {
+      return res.status(400).json({ error: 'No fields to update' });
+    }
+
+    values.push(sessionId);
+    await pool.query(`UPDATE chat_sessions SET ${fields.join(', ')} WHERE id = ?`, values);
+    
+    // Fetch updated session
+    const [rows] = await pool.query(
+      `SELECT s.id, s.title, s.user_id, s.book_id, b.title as book_title, s.created_at
+       FROM chat_sessions s
+       LEFT JOIN lore_books b ON s.book_id = b.id
+       WHERE s.id = ?`,
+      [sessionId]
+    );
+
+    res.json({ success: true, session: rows[0] });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -238,6 +270,16 @@ app.post('/api/chat', optionalAuth, async (req, res) => {
       });
     }
 
+    const [sessRows] = await pool.query(
+      `SELECT s.book_id, b.title as book_title, b.system_instruction as book_instruction
+       FROM chat_sessions s
+       LEFT JOIN lore_books b ON s.book_id = b.id
+       WHERE s.id = ?`,
+      [sessionId]
+    );
+    const sessionBook = sessRows[0] || null;
+    const bookId = sessionBook?.book_id || null;
+
     const [historyRows] = await pool.query(
       `SELECT id, role, content FROM chat_messages WHERE session_id = ? ORDER BY id ASC`,
       [sessionId]
@@ -252,10 +294,18 @@ app.post('/api/chat', optionalAuth, async (req, res) => {
     const { retrievedLore, formattedContext, retrievedLoreIds } = await RAGEngine.retrieveLore({
       currentPrompt: cleanPrompt,
       recentMessages,
-      maxResults: 6
+      maxResults: 6,
+      bookId
     });
 
-    const fullSystemInstruction = `${masterInstruction}\n${formattedContext}`;
+    let fullSystemInstruction = masterInstruction;
+    if (sessionBook?.book_instruction?.trim()) {
+      fullSystemInstruction += `\n\n[WORLD SPECIFIC SYSTEM INSTRUCTION - ${sessionBook.book_title || 'Active World'}]\n${sessionBook.book_instruction.trim()}`;
+    }
+    if (formattedContext) {
+      fullSystemInstruction += `\n${formattedContext}`;
+    }
+
     const modelLimit = getModelContextLimit(model);
     const effectiveThreshold = Math.min(contextRollingThreshold, modelLimit - maxOutputTokens - 500);
 
@@ -372,6 +422,16 @@ app.post('/api/chat/stream', optionalAuth, async (req, res) => {
   res.flushHeaders?.();
 
   try {
+    const [sessRows] = await pool.query(
+      `SELECT s.book_id, b.title as book_title, b.system_instruction as book_instruction
+       FROM chat_sessions s
+       LEFT JOIN lore_books b ON s.book_id = b.id
+       WHERE s.id = ?`,
+      [sessionId]
+    );
+    const sessionBook = sessRows[0] || null;
+    const bookId = sessionBook?.book_id || null;
+
     const [historyRows] = await pool.query(
       `SELECT id, role, content FROM chat_messages WHERE session_id = ? ORDER BY id ASC`,
       [sessionId]
@@ -386,10 +446,18 @@ app.post('/api/chat/stream', optionalAuth, async (req, res) => {
     const { retrievedLore, formattedContext, retrievedLoreIds } = await RAGEngine.retrieveLore({
       currentPrompt: cleanPrompt,
       recentMessages,
-      maxResults: 6
+      maxResults: 6,
+      bookId
     });
 
-    const fullSystemInstruction = `${masterInstruction}\n${formattedContext}`;
+    let fullSystemInstruction = masterInstruction;
+    if (sessionBook?.book_instruction?.trim()) {
+      fullSystemInstruction += `\n\n[WORLD SPECIFIC SYSTEM INSTRUCTION - ${sessionBook.book_title || 'Active World'}]\n${sessionBook.book_instruction.trim()}`;
+    }
+    if (formattedContext) {
+      fullSystemInstruction += `\n${formattedContext}`;
+    }
+
     const modelLimit = getModelContextLimit(model);
     const effectiveThreshold = Math.min(contextRollingThreshold, modelLimit - maxOutputTokens - 500);
 
@@ -474,15 +542,156 @@ app.post('/api/chat/stream', optionalAuth, async (req, res) => {
 });
 
 // ==========================================
-// LOREBOOK DATABASE CRUD (public)
+// LORE BOOKS (MULTI-WORLD CONTAINER)
+// ==========================================
+
+app.get('/api/books', optionalAuth, async (req, res) => {
+  try {
+    const userId = req.user?.id || 0;
+    let books;
+
+    if (userId > 0) {
+      [books] = await pool.query(
+        `SELECT b.id, b.user_id, b.title, b.description, b.system_instruction, b.language, b.created_at,
+                COUNT(e.id) as entry_count
+         FROM lore_books b
+         LEFT JOIN lore_entries e ON b.id = e.book_id
+         WHERE b.user_id = ? OR b.user_id IS NULL
+         GROUP BY b.id
+         ORDER BY (b.user_id = ?) DESC, b.created_at ASC`,
+        [userId, userId]
+      );
+    } else {
+      [books] = await pool.query(
+        `SELECT b.id, b.user_id, b.title, b.description, b.system_instruction, b.language, b.created_at,
+                COUNT(e.id) as entry_count
+         FROM lore_books b
+         LEFT JOIN lore_entries e ON b.id = e.book_id
+         WHERE b.user_id IS NULL OR b.user_id = 0
+         GROUP BY b.id
+         ORDER BY b.created_at ASC`
+      );
+    }
+
+    res.json(books);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post('/api/books', optionalAuth, async (req, res) => {
+  try {
+    const userId = req.user?.id || 0;
+    const { title, description = '', system_instruction = '', language = 'vi' } = req.body;
+
+    if (!title?.trim()) {
+      return res.status(400).json({ error: 'Book title is required' });
+    }
+
+    const [result] = await pool.query(
+      `INSERT INTO lore_books (user_id, title, description, system_instruction, language)
+       VALUES (?, ?, ?, ?, ?)`,
+      [userId > 0 ? userId : null, title.trim(), description.trim(), system_instruction.trim(), language.trim()]
+    );
+
+    res.status(201).json({
+      id: result.insertId,
+      user_id: userId > 0 ? userId : null,
+      title: title.trim(),
+      description: description.trim(),
+      system_instruction: system_instruction.trim(),
+      language: language.trim(),
+      entry_count: 0,
+      created_at: new Date()
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.put('/api/books/:id', optionalAuth, async (req, res) => {
+  try {
+    const bookId = parseInt(req.params.id, 10);
+    const { title, description, system_instruction, language } = req.body;
+
+    const [existing] = await pool.query(`SELECT * FROM lore_books WHERE id = ?`, [bookId]);
+    if (existing.length === 0) {
+      return res.status(404).json({ error: 'Lore Book not found' });
+    }
+
+    const updatedTitle = title !== undefined ? title.trim() : existing[0].title;
+    const updatedDesc = description !== undefined ? description.trim() : existing[0].description;
+    const updatedInst = system_instruction !== undefined ? system_instruction : existing[0].system_instruction;
+    const updatedLang = language !== undefined ? language.trim() : existing[0].language;
+
+    await pool.query(
+      `UPDATE lore_books SET title = ?, description = ?, system_instruction = ?, language = ? WHERE id = ?`,
+      [updatedTitle, updatedDesc, updatedInst, updatedLang, bookId]
+    );
+
+    res.json({
+      success: true,
+      id: bookId,
+      title: updatedTitle,
+      description: updatedDesc,
+      system_instruction: updatedInst,
+      language: updatedLang
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.delete('/api/books/:id', optionalAuth, async (req, res) => {
+  try {
+    const bookId = parseInt(req.params.id, 10);
+    await pool.query(`DELETE FROM lore_entries WHERE book_id = ?`, [bookId]);
+    await pool.query(`DELETE FROM lore_books WHERE id = ?`, [bookId]);
+    res.json({ success: true, deletedId: bookId });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.get('/api/books/:id/entries', async (req, res) => {
+  try {
+    const bookId = parseInt(req.params.id, 10);
+    const { category, search } = req.query;
+    let sql = `SELECT id, book_id, category, title, aliases, rules, content, created_at FROM lore_entries WHERE book_id = ?`;
+    const params = [bookId];
+
+    if (category && category !== 'All') {
+      sql += ` AND category = ?`;
+      params.push(category);
+    }
+    if (search && search.trim()) {
+      sql += ` AND (title LIKE ? OR aliases LIKE ? OR content LIKE ?)`;
+      const term = `%${search.trim()}%`;
+      params.push(term, term, term);
+    }
+
+    sql += ` ORDER BY title ASC`;
+    const [rows] = await pool.query(sql, params);
+    res.json(rows);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ==========================================
+// LOREBOOK DATABASE CRUD (public / book-scoped)
 // ==========================================
 
 app.get('/api/lore', async (req, res) => {
   try {
-    const { category, search } = req.query;
-    let sql = `SELECT id, category, title, aliases, rules, content, created_at FROM lore_entries WHERE 1=1`;
+    const { category, search, book_id } = req.query;
+    let sql = `SELECT id, book_id, category, title, aliases, rules, content, created_at FROM lore_entries WHERE 1=1`;
     const params = [];
 
+    if (book_id) {
+      sql += ` AND book_id = ?`;
+      params.push(parseInt(book_id, 10));
+    }
     if (category && category !== 'All') {
       sql += ` AND category = ?`;
       params.push(category);
@@ -503,18 +712,26 @@ app.get('/api/lore', async (req, res) => {
 
 app.post('/api/lore', async (req, res) => {
   try {
-    const { category = 'General', title, aliases = '', rules = '', content = '' } = req.body;
+    const { category = 'General', title, aliases = '', rules = '', content = '', book_id } = req.body;
     if (!title?.trim()) {
       return res.status(400).json({ error: 'Title is required' });
     }
 
+    // Resolve target book_id (use provided, or fallback to first available book)
+    let targetBookId = book_id ? parseInt(book_id, 10) : null;
+    if (!targetBookId) {
+      const [firstBook] = await pool.query(`SELECT id FROM lore_books ORDER BY id ASC LIMIT 1`);
+      targetBookId = firstBook[0]?.id || null;
+    }
+
     const [result] = await pool.query(
-      `INSERT INTO lore_entries (category, title, aliases, rules, content) VALUES (?, ?, ?, ?, ?)`,
-      [category.trim(), title.trim(), aliases.trim(), rules.trim(), content.trim()]
+      `INSERT INTO lore_entries (book_id, category, title, aliases, rules, content) VALUES (?, ?, ?, ?, ?, ?)`,
+      [targetBookId, category.trim(), title.trim(), aliases.trim(), rules.trim(), content.trim()]
     );
 
     res.status(201).json({
       id: result.insertId,
+      book_id: targetBookId,
       category,
       title: title.trim(),
       aliases: aliases.trim(),
@@ -529,17 +746,24 @@ app.post('/api/lore', async (req, res) => {
 app.put('/api/lore/:id', async (req, res) => {
   try {
     const id = req.params.id;
-    const { category, title, aliases, rules, content } = req.body;
+    const { category, title, aliases, rules, content, book_id } = req.body;
     if (!title?.trim()) {
       return res.status(400).json({ error: 'Title is required' });
     }
 
-    await pool.query(
-      `UPDATE lore_entries SET category = ?, title = ?, aliases = ?, rules = ?, content = ? WHERE id = ?`,
-      [category.trim(), title.trim(), aliases?.trim() || '', rules?.trim() || '', content?.trim() || '', id]
-    );
+    if (book_id !== undefined) {
+      await pool.query(
+        `UPDATE lore_entries SET category = ?, title = ?, aliases = ?, rules = ?, content = ?, book_id = ? WHERE id = ?`,
+        [category.trim(), title.trim(), aliases?.trim() || '', rules?.trim() || '', content?.trim() || '', parseInt(book_id, 10), id]
+      );
+    } else {
+      await pool.query(
+        `UPDATE lore_entries SET category = ?, title = ?, aliases = ?, rules = ?, content = ? WHERE id = ?`,
+        [category.trim(), title.trim(), aliases?.trim() || '', rules?.trim() || '', content?.trim() || '', id]
+      );
+    }
 
-    res.json({ id: parseInt(id, 10), category, title, aliases, rules, content });
+    res.json({ id: parseInt(id, 10), book_id, category, title, aliases, rules, content });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }

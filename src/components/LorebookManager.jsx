@@ -15,7 +15,7 @@ import Modal from './Modal';
 
 const CATEGORIES = ['All', 'Character', 'MagicSystem', 'Location', 'Timeline', 'Faction', 'General'];
 
-export default function LorebookManager() {
+export default function LorebookManager({ bookId, bookTitle, onEntriesUpdated }) {
   const [loreList, setLoreList] = useState([]);
   const [selectedCategory, setSelectedCategory] = useState('All');
   const [searchQuery, setSearchQuery] = useState('');
@@ -36,7 +36,7 @@ export default function LorebookManager() {
   const loadLore = async () => {
     setIsLoading(true);
     try {
-      const data = await ClientRAGService.getLorebook(selectedCategory, searchQuery);
+      const data = await ClientRAGService.getLorebook(bookId, selectedCategory, searchQuery);
       setLoreList(data);
     } catch (err) {
       console.error('Failed to load lore:', err);
@@ -47,7 +47,7 @@ export default function LorebookManager() {
 
   useEffect(() => {
     loadLore();
-  }, [selectedCategory, searchQuery]);
+  }, [bookId, selectedCategory, searchQuery]);
 
   const handleOpenCreate = () => {
     setEditingEntry(null);
@@ -80,6 +80,7 @@ export default function LorebookManager() {
       try {
         await ClientRAGService.deleteLoreEntry(id);
         loadLore();
+        onEntriesUpdated?.();
       } catch (err) {
         alert('Failed to delete lore: ' + err.message);
       }
@@ -89,6 +90,7 @@ export default function LorebookManager() {
   const handleQuickCreateBlank = async () => {
     try {
       await ClientRAGService.saveLoreEntry({
+        book_id: bookId,
         title: 'Untitled Lore ' + Date.now().toString().slice(-4),
         category: 'General',
         aliases: '',
@@ -96,6 +98,7 @@ export default function LorebookManager() {
         content: ''
       });
       loadLore();
+      onEntriesUpdated?.();
     } catch (err) {
       alert('Failed to create blank lore: ' + err.message);
     }
@@ -111,10 +114,12 @@ export default function LorebookManager() {
     try {
       await ClientRAGService.saveLoreEntry({
         ...formData,
+        book_id: bookId,
         id: editingEntry?.id
       });
       setIsModalOpen(false);
       loadLore();
+      onEntriesUpdated?.();
     } catch (err) {
       setFormError(err.message || 'Failed to save lore');
     }
@@ -127,10 +132,10 @@ export default function LorebookManager() {
         <div>
           <h2 className="text-sm font-bold uppercase tracking-wider text-cyan-400 flex items-center space-x-2">
             <Layers size={16} />
-            <span>Lorebook Knowledge Base</span>
+            <span>Lorebook Knowledge Base {bookTitle ? `— ${bookTitle}` : ''}</span>
           </h2>
           <p className="text-xs text-slate-400">
-            Define entities, factions, laws of physics, and logical constraints retrieved by the RAG engine.
+            Define entities, factions, laws of physics, and logical constraints retrieved by the RAG engine for this world.
           </p>
         </div>
 
@@ -148,11 +153,11 @@ export default function LorebookManager() {
             title="Create empty lore entry instantly"
           >
             <Plus size={14} />
-            <span>New Lore Book (Tạo Trắng)</span>
+            <span>+ Quick Blank Entry</span>
           </button>
           <button
             onClick={handleOpenCreate}
-            className="flex items-center space-x-1.5 px-3 py-1.5 rounded bg-cyan-500 text-black text-xs font-semibold hover:bg-cyan-400 shadow-glow-cyan-sm transition-all"
+            className="flex items-center space-x-1.5 px-3 py-1.5 rounded bg-cyan-400 text-black text-xs font-semibold hover:bg-cyan-300 shadow-glow-cyan-sm transition-all"
           >
             <Plus size={14} />
             <span>New Canon Entry</span>

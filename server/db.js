@@ -196,6 +196,87 @@ export async function initDatabase() {
       console.warn('[DB] chat_sessions.user_id notice:', alterErr.message);
     }
 
+    // 9. lore_books (Multi-Book / Multi-World Container)
+    await connection.query(`
+      CREATE TABLE IF NOT EXISTS lore_books (
+        id INT AUTO_INCREMENT PRIMARY KEY,
+        user_id INT NULL,
+        title VARCHAR(255) NOT NULL,
+        description TEXT NULL,
+        system_instruction LONGTEXT NULL,
+        language VARCHAR(20) DEFAULT 'vi',
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+    `);
+    console.log('[DB] Table lore_books verified.');
+
+    // Ensure system_instruction column in lore_books if created previously without it
+    try {
+      const [bookCols] = await connection.query(
+        `SELECT COLUMN_NAME FROM INFORMATION_SCHEMA.COLUMNS 
+         WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'lore_books' AND COLUMN_NAME = 'system_instruction'`
+      );
+      if (bookCols.length === 0) {
+        await connection.query(`ALTER TABLE lore_books ADD COLUMN system_instruction LONGTEXT NULL`);
+        console.log('[DB] Added system_instruction column to lore_books.');
+      }
+    } catch (colErr) {
+      console.warn('[DB] lore_books.system_instruction notice:', colErr.message);
+    }
+
+    // 10. Ensure default seed book exists
+    let defaultBookId = null;
+    const [bookRows] = await connection.query(
+      `SELECT id FROM lore_books WHERE title = 'Nova Aethel: Resonant Grid' LIMIT 1`
+    );
+    if (bookRows.length > 0) {
+      defaultBookId = bookRows[0].id;
+    } else {
+      const [createSeedBook] = await connection.query(
+        `INSERT INTO lore_books (user_id, title, description, system_instruction, language)
+         VALUES (NULL, 'Nova Aethel: Resonant Grid', 
+                 'Cyber-aetheric metropolis governed by the Iron Synod. Deterministic resonant physics and conduit underworld.',
+                 'STRICT ARCHITECTURE & TONE INSTRUCTIONS:\n1. Maintain absolute deterministic aether physics.\n2. Overdrawing aether causes Flux Burn.\n3. The Iron Synod executes heretics with extreme prejudice.',
+                 'vi')`
+      );
+      defaultBookId = createSeedBook.insertId;
+      console.log('[DB] Default seed book "Nova Aethel: Resonant Grid" created with ID:', defaultBookId);
+    }
+
+    // 11. Add book_id to lore_entries and migrate orphaned entries
+    try {
+      const [loreCols] = await connection.query(
+        `SELECT COLUMN_NAME FROM INFORMATION_SCHEMA.COLUMNS 
+         WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'lore_entries' AND COLUMN_NAME = 'book_id'`
+      );
+      if (loreCols.length === 0) {
+        await connection.query(`ALTER TABLE lore_entries ADD COLUMN book_id INT NULL`);
+        console.log('[DB] Added book_id column to lore_entries.');
+      }
+
+      // Migrate orphaned lore entries to defaultBookId
+      if (defaultBookId) {
+        await connection.query(`UPDATE lore_entries SET book_id = ? WHERE book_id IS NULL`, [defaultBookId]);
+      }
+    } catch (loreColErr) {
+      console.warn('[DB] lore_entries.book_id notice:', loreColErr.message);
+    }
+
+    // 12. Add book_id to chat_sessions (allows linking story to specific book)
+    try {
+      const [sessBookCols] = await connection.query(
+        `SELECT COLUMN_NAME FROM INFORMATION_SCHEMA.COLUMNS 
+         WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'chat_sessions' AND COLUMN_NAME = 'book_id'`
+      );
+      if (sessBookCols.length === 0) {
+        await connection.query(`ALTER TABLE chat_sessions ADD COLUMN book_id INT NULL`);
+        console.log('[DB] Added book_id column to chat_sessions.');
+      }
+    } catch (sessBookErr) {
+      console.warn('[DB] chat_sessions.book_id notice:', sessBookErr.message);
+    }
+
     // Seed or upgrade master instruction to include <thinking> & LaTeX
     const [instRows] = await connection.query(`SELECT value FROM system_configs WHERE key_name = 'master_system_instruction'`);
     if (instRows.length === 0) {
@@ -217,11 +298,11 @@ export async function initDatabase() {
     if (countRows[0].total === 0) {
       for (const item of SEED_LORE) {
         await connection.query(
-          `INSERT INTO lore_entries (category, title, aliases, content, rules) VALUES (?, ?, ?, ?, ?)`,
-          [item.category, item.title, item.aliases, item.content, item.rules]
+          `INSERT INTO lore_entries (book_id, category, title, aliases, content, rules) VALUES (?, ?, ?, ?, ?, ?)`,
+          [defaultBookId, item.category, item.title, item.aliases, item.content, item.rules]
         );
       }
-      console.log('[DB] Initial seed lore entries inserted.');
+      console.log('[DB] Initial seed lore entries inserted into default book.');
     }
 
     console.log('[DB] Database migration and initialization completed successfully.');

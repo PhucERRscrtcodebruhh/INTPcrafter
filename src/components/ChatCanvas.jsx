@@ -39,7 +39,10 @@ export default function ChatCanvas({
   onNavigateToLorebook,
   onEditMessage,
   onDeleteMessage,
-  onRegenerateMessage
+  onRegenerateMessage,
+  books = [],
+  activeBookId = null,
+  onLinkBook
 }) {
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [activeLoreInDrawer, setActiveLoreInDrawer] = useState(retrievedLore);
@@ -78,6 +81,9 @@ export default function ChatCanvas({
           onUpdateRollingThreshold={onUpdateRollingThreshold}
           isRolled={isRolled}
           historyStats={historyStats}
+          books={books}
+          activeBookId={activeBookId}
+          onLinkBook={onLinkBook}
         />
 
         {/* Message Stream */}

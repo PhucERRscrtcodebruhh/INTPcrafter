@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useRef, useEffect } from 'react';
 import { 
   Gauge, 
   Sliders, 
@@ -6,7 +6,10 @@ import {
   Info, 
   Sparkles, 
   AlertCircle,
-  Scissors
+  Scissors,
+  Globe,
+  ChevronDown,
+  Check
 } from 'lucide-react';
 import { formatTokenCount, getModelSpec } from '../services/tokenEstimator';
 
@@ -16,13 +19,30 @@ export default function ContextBar({
   rollingThreshold = 32768,
   onUpdateRollingThreshold,
   isRolled = false,
-  historyStats = null
+  historyStats = null,
+  books = [],
+  activeBookId = null,
+  onLinkBook
 }) {
   const [showThresholdPicker, setShowThresholdPicker] = useState(false);
+  const [showWorldPicker, setShowWorldPicker] = useState(false);
+  const worldPickerRef = useRef(null);
+
   const spec = getModelSpec(activeModel);
   const limit = spec.contextLimit;
   const usagePercent = Math.min(100, Math.max(0.01, (currentTokens / limit) * 100));
   const thresholdPercent = Math.min(100, (rollingThreshold / limit) * 100);
+
+  // Close world picker on click outside
+  useEffect(() => {
+    const handleClick = (e) => {
+      if (worldPickerRef.current && !worldPickerRef.current.contains(e.target)) {
+        setShowWorldPicker(false);
+      }
+    };
+    document.addEventListener('mousedown', handleClick);
+    return () => document.removeEventListener('mousedown', handleClick);
+  }, []);
 
   // Preset token thresholds
   const presets = [
@@ -35,8 +55,10 @@ export default function ContextBar({
     { label: 'Max Context', value: Math.floor(limit * 0.9) }
   ].filter(p => p.value <= limit);
 
+  const linkedBook = books.find(b => b.id === activeBookId) || null;
+
   return (
-    <div className="relative border-b border-cyan-500/15 bg-cyber-900/60 px-4 py-2 select-none">
+    <div className="relative border-b border-cyan-500/15 bg-cyber-900/60 px-4 py-2 select-none font-mono">
       <div className="flex flex-wrap items-center justify-between gap-3 text-xs">
         {/* Left: Token Count & Model Limit Gauge */}
         <div className="flex items-center space-x-3">
@@ -56,7 +78,7 @@ export default function ContextBar({
           </div>
 
           {/* Mini progress bar */}
-          <div className="w-24 sm:w-36 h-2 bg-cyber-950 rounded-full border border-slate-800 overflow-hidden relative">
+          <div className="w-20 sm:w-28 h-2 bg-cyber-950 rounded-full border border-slate-800 overflow-hidden relative">
             {/* Rolling threshold marker line */}
             <div 
               className="absolute top-0 bottom-0 w-0.5 bg-amber-400 z-10"
@@ -75,14 +97,73 @@ export default function ContextBar({
           </div>
         </div>
 
-        {/* Right: Rolling Context Threshold Controller */}
-        <div className="flex items-center space-x-2">
+        {/* Center/Right: Linked World & Rolling Controller */}
+        <div className="flex items-center space-x-2.5">
+          {/* Linked World / Lorebook Dropdown */}
+          <div className="relative" ref={worldPickerRef}>
+            <button
+              onClick={() => setShowWorldPicker(!showWorldPicker)}
+              className={`flex items-center space-x-1.5 px-2.5 py-1 rounded border text-xs transition-all ${
+                linkedBook
+                  ? 'bg-cyan-950/80 border-cyan-500/50 text-cyan-300 shadow-glow-cyan-sm'
+                  : 'bg-cyber-950 border-slate-800 text-slate-400 hover:text-slate-200'
+              }`}
+              title="Link this story session to a dedicated Lore World container"
+            >
+              <Globe size={13} className={linkedBook ? 'text-cyan-400' : 'text-slate-500'} />
+              <span className="text-slate-400">World:</span>
+              <span className="font-semibold text-slate-200 max-w-[120px] truncate">
+                {linkedBook ? linkedBook.title : 'None (Unlinked)'}
+              </span>
+              <ChevronDown size={11} className="text-slate-500" />
+            </button>
+
+            {/* Dropdown Menu */}
+            {showWorldPicker && (
+              <div className="absolute right-0 mt-1 w-64 bg-cyber-900 border border-cyan-500/40 rounded-lg shadow-glow-cyan p-1.5 z-40 space-y-1 animate-fadeIn">
+                <div className="px-2 py-1 text-[10px] text-slate-400 font-semibold uppercase tracking-wider border-b border-slate-800 flex items-center justify-between">
+                  <span>Linked Story World</span>
+                  <span className="text-cyan-400 font-mono">{books.length} Worlds</span>
+                </div>
+
+                <button
+                  onClick={() => { onLinkBook?.(null); setShowWorldPicker(false); }}
+                  className={`w-full text-left px-2.5 py-1.5 rounded text-xs flex items-center justify-between transition-colors ${
+                    !activeBookId ? 'bg-cyan-500/20 text-cyan-300 font-bold' : 'text-slate-400 hover:bg-cyber-950 hover:text-slate-200'
+                  }`}
+                >
+                  <div>
+                    <div>None (No World Linked)</div>
+                    <div className="text-[10px] text-slate-500">RAG will not inject lore</div>
+                  </div>
+                  {!activeBookId && <Check size={13} className="text-cyan-400" />}
+                </button>
+
+                {books.map(b => (
+                  <button
+                    key={b.id}
+                    onClick={() => { onLinkBook?.(b.id); setShowWorldPicker(false); }}
+                    className={`w-full text-left px-2.5 py-1.5 rounded text-xs flex items-center justify-between transition-colors ${
+                      activeBookId === b.id ? 'bg-cyan-500/20 text-cyan-300 font-bold' : 'text-slate-300 hover:bg-cyber-950 hover:text-cyan-300'
+                    }`}
+                  >
+                    <div className="truncate pr-2">
+                      <div className="truncate">{b.title}</div>
+                      <div className="text-[10px] text-slate-500 font-normal">{b.entry_count || 0} lore entries</div>
+                    </div>
+                    {activeBookId === b.id && <Check size={13} className="text-cyan-400 shrink-0" />}
+                  </button>
+                ))}
+              </div>
+            )}
+          </div>
+
           {/* Status of Rolling */}
           {isRolled && (
             <div className="flex items-center space-x-1 px-2 py-0.5 rounded bg-amber-950/60 border border-amber-500/40 text-amber-300 text-[11px] animate-pulse">
               <Scissors size={12} />
               <span>
-                Window Rolled ({historyStats?.keptMessages || 0}/{historyStats?.originalMessages || 0} msgs active)
+                Rolled ({historyStats?.keptMessages || 0}/{historyStats?.originalMessages || 0})
               </span>
             </div>
           )}

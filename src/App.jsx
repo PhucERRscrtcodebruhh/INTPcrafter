@@ -99,9 +99,22 @@ export default function App() {
     return saved || 'vi';
   });
 
+  // Multiverse Lore Books state
+  const [books, setBooks] = useState([]);
+
+  const loadBooks = async () => {
+    try {
+      const data = await api.getBooks();
+      setBooks(data);
+    } catch (err) {
+      console.error('Failed to load books:', err);
+    }
+  };
+
   // Load Initial Data
   useEffect(() => {
     loadSessions();
+    loadBooks();
     loadKeyPoolTelemetry();
 
     // Listen for auth:logout event (from api.js 401 handler)
@@ -116,6 +129,7 @@ export default function App() {
       setCurrentUser(defaultDev);
       localStorage.setItem('storycontainer_user', JSON.stringify(defaultDev));
       loadSessions();
+      loadBooks();
     };
     window.addEventListener('auth:logout', handleAuthLogout);
 
@@ -133,9 +147,10 @@ export default function App() {
     };
   }, []);
 
-  // Reload sessions when user changes
+  // Reload sessions & books when user changes
   useEffect(() => {
     loadSessions();
+    loadBooks();
     loadKeyPoolTelemetry();
   }, [currentUser?.id]);
 
@@ -215,10 +230,26 @@ export default function App() {
     }
   };
 
-  // Session Handlers
-  const handleCreateSession = async (title) => {
+  // Active session and linked world
+  const activeSession = sessions.find(s => s.id === activeSessionId) || null;
+  const linkedBookId = activeSession?.book_id || null;
+
+  const handleLinkBookToSession = async (bookId) => {
+    if (!activeSessionId) return;
     try {
-      const newSession = await api.createSession(title);
+      await api.updateSession(activeSessionId, { book_id: bookId });
+      setSessions(prev => prev.map(s => s.id === activeSessionId ? { ...s, book_id: bookId } : s));
+    } catch (err) {
+      console.error('Failed to link world:', err);
+      setErrorMessage('Failed to link world: ' + err.message);
+    }
+  };
+
+  // Session Handlers
+  const handleCreateSession = async (title, bookId = null) => {
+    try {
+      const targetBookId = bookId !== null ? bookId : (books.length > 0 ? books[0].id : null);
+      const newSession = await api.createSession(title, targetBookId);
       setSessions(prev => [newSession, ...prev]);
       setActiveSessionId(newSession.id);
       setMessages([]);
@@ -545,10 +576,17 @@ export default function App() {
             onEditMessage={handleEditMessage}
             onDeleteMessage={handleDeleteMessage}
             onRegenerateMessage={handleRegenerateMessage}
+            books={books}
+            activeBookId={linkedBookId}
+            onLinkBook={handleLinkBookToSession}
           />
         ) : (
           <LorebookDashboard
             onBackToStudio={() => setCurrentView('studio')}
+            books={books}
+            onBooksChanged={setBooks}
+            activeBookId={linkedBookId}
+            onSelectBook={handleLinkBookToSession}
           />
         )}
       </main>

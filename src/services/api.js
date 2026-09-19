@@ -40,13 +40,13 @@ export const api = {
 
   // Sessions
   getSessions: () => request('/sessions'),
-  createSession: (title) => request('/sessions', {
+  createSession: (title, book_id = null) => request('/sessions', {
     method: 'POST',
-    body: JSON.stringify({ title }),
+    body: JSON.stringify({ title, book_id }),
   }),
-  updateSession: (id, title) => request(`/sessions/${id}`, {
+  updateSession: (id, data) => request(`/sessions/${id}`, {
     method: 'PUT',
-    body: JSON.stringify({ title }),
+    body: JSON.stringify(typeof data === 'string' ? { title: data } : data),
   }),
   deleteSession: (id) => request(`/sessions/${id}`, {
     method: 'DELETE',
@@ -157,9 +157,31 @@ export const api = {
     }
   },
 
+  // Multi-World / Lore Books
+  getBooks: () => request('/books'),
+  createBook: (bookData) => request('/books', {
+    method: 'POST',
+    body: JSON.stringify(bookData),
+  }),
+  updateBook: (id, bookData) => request(`/books/${id}`, {
+    method: 'PUT',
+    body: JSON.stringify(bookData),
+  }),
+  deleteBook: (id) => request(`/books/${id}`, {
+    method: 'DELETE',
+  }),
+  getBookEntries: (bookId, params = {}) => {
+    const query = new URLSearchParams();
+    if (params.category && params.category !== 'All') query.set('category', params.category);
+    if (params.search) query.set('search', params.search);
+    const queryString = query.toString();
+    return request(`/books/${bookId}/entries${queryString ? `?${queryString}` : ''}`);
+  },
+
   // Lorebook
   getLore: (params = {}) => {
     const query = new URLSearchParams();
+    if (params.book_id) query.set('book_id', params.book_id);
     if (params.category && params.category !== 'All') query.set('category', params.category);
     if (params.search) query.set('search', params.search);
     const queryString = query.toString();
