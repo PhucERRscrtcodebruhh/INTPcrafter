@@ -1,0 +1,138 @@
+@import 'katex/dist/katex.min.css';
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  color-scheme: dark;
+  --font-mono: 'JetBrains Mono', monospace;
+}
+
+body, button, input, textarea, select, h1, h2, h3, h4, h5, h6, p, span, div, pre, code {
+  font-family: 'JetBrains Mono', monospace;
+}
+
+/* Ensure KaTeX symbols retain their mathematical font glyphs */
+.katex, .katex * {
+  font-family: KaTeX_Main, KaTeX_Math, 'Times New Roman', serif !important;
+}
+
+body {
+  margin: 0;
+  padding: 0;
+  background-color: #06080d;
+  color: #e2e8f0;
+  overflow: hidden;
+}
+
+/* Modern standard scrollbar */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: rgba(0, 240, 255, 0.25) rgba(10, 14, 23, 0.6);
+}
+
+/* Fallback for WebKit browsers */
+@supports not (scrollbar-color: auto) {
+  ::-webkit-scrollbar {
+    width: 6px;
+    height: 6px;
+  }
+  ::-webkit-scrollbar-track {
+    background: rgba(10, 14, 23, 0.6);
+  }
+  ::-webkit-scrollbar-thumb {
+    background: rgba(0, 240, 255, 0.25);
+    border-radius: 3px;
+  }
+  ::-webkit-scrollbar-thumb:hover {
+    background: rgba(0, 240, 255, 0.5);
+  }
+}
+
+/* Cyberpunk Glassmorphism */
+.glass-panel {
+  background: rgba(10, 14, 23, 0.75);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  border: 1px solid rgba(0, 240, 255, 0.15);
+}
+
+.glass-panel-subtle {
+  background: rgba(15, 20, 34, 0.6);
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+  border: 1px solid rgba(255, 255, 255, 0.07);
+}
+
+.glass-input {
+  background: rgba(6, 8, 13, 0.85);
+  border: 1px solid rgba(0, 240, 255, 0.2);
+  color: #f1f5f9;
+  transition: all 0.2s ease;
+}
+
+.glass-input:focus {
+  outline: none;
+  border-color: #00f0ff;
+  box-shadow: 0 0 10px rgba(0, 240, 255, 0.25);
+}
+
+/* Markdown styling in Story Canvas */
+.prose-story p {
+  margin-bottom: 1.15em;
+  line-height: 1.85;
+  color: #cbd5e1;
+}
+
+.prose-story h1, .prose-story h2, .prose-story h3 {
+  color: #00f0ff;
+  margin-top: 1.25em;
+  margin-bottom: 0.5em;
+  font-weight: 600;
+}
+
+.prose-story strong {
+  color: #38bdf8;
+}
+
+.prose-story em {
+  color: #a5f3fc;
+  font-style: italic;
+}
+
+.prose-story blockquote {
+  border-left: 2px solid #00f0ff;
+  padding-left: 1rem;
+  margin-left: 0;
+  color: #94a3b8;
+  font-style: italic;
+}
+
+.prose-story code {
+  background: rgba(0, 240, 255, 0.08);
+  border: 1px solid rgba(0, 240, 255, 0.2);
+  padding: 0.15rem 0.35rem;
+  border-radius: 3px;
+  color: #38bdf8;
+  font-size: 0.9em;
+}
+
+.prose-story pre {
+  background: #070a12;
+  border: 1px solid rgba(0, 240, 255, 0.15);
+  padding: 1rem;
+  border-radius: 4px;
+  overflow-x: auto;
+  margin: 1rem 0;
+}
+
+/* Pulse effects */
+@keyframes cyberPulse {
+  0%, 100% { opacity: 0.4; }
+  50% { opacity: 0.9; }
+}
+
+.animate-cyber-pulse {
+  animation: cyberPulse 2s cubic-bezier(0.4, 0, 0.6, 1) infinite;
+}
