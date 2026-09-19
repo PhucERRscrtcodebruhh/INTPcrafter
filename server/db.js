@@ -1,11 +1,18 @@
 import mysql from 'mysql2/promise';
+import dotenv from 'dotenv';
+
+dotenv.config();
+
+if (!process.env.DB_HOST || !process.env.DB_USER || !process.env.DB_PASSWORD) {
+  console.warn('[DB Security Warning] Missing database credentials in environment variables (.env). Please configure DB_HOST, DB_USER, DB_PASSWORD, DB_NAME.');
+}
 
 export const dbConfig = {
-  host: process.env.DB_HOST || '91.99.159.222',
+  host: process.env.DB_HOST,
   port: parseInt(process.env.DB_PORT || '3306', 10),
-  user: process.env.DB_USER || 'u35324_0ndPu8WHhi',
-  password: process.env.DB_PASSWORD || '6e2sjPCa+vCjhP4C=W7RT@uw',
-  database: process.env.DB_NAME || 's35324_phucbot-storycontainer-db',
+  user: process.env.DB_USER,
+  password: process.env.DB_PASSWORD,
+  database: process.env.DB_NAME,
   waitForConnections: true,
   connectionLimit: 10,
   queueLimit: 0,
@@ -123,6 +130,23 @@ export async function initDatabase() {
       ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
     `);
     console.log('[DB] Table system_configs verified.');
+
+    // 5. api_keys_vault (Google API Key Vault with SHA-256 Hashing & Encryption)
+    await connection.query(`
+      CREATE TABLE IF NOT EXISTS api_keys_vault (
+        id INT AUTO_INCREMENT PRIMARY KEY,
+        key_hash VARCHAR(64) NOT NULL UNIQUE,
+        encrypted_key TEXT NOT NULL,
+        masked_key VARCHAR(32) NOT NULL,
+        status VARCHAR(32) DEFAULT 'active',
+        call_count INT DEFAULT 0,
+        last_used_at BIGINT NULL,
+        rate_limited_until BIGINT NULL,
+        error_msg TEXT NULL,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+    `);
+    console.log('[DB] Table api_keys_vault (SHA-256 secure hash) verified.');
 
     // Seed or upgrade master instruction to include <thinking> & LaTeX
     const [instRows] = await connection.query(`SELECT value FROM system_configs WHERE key_name = 'master_system_instruction'`);

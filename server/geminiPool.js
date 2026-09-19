@@ -1,9 +1,48 @@
+import crypto from 'crypto';
 import { GoogleGenAI } from '@google/genai';
 import { pool } from './db.js';
 
+const CRYPTO_SECRET = process.env.CRYPTO_SECRET || 'intp_5w4_neuro_matrix_vault_secret_key_9999';
+
+// SHA-256 Cryptographic Hash
+export function sha256Hash(key) {
+  if (!key) return '';
+  return crypto.createHash('sha256').update(key.trim()).digest('hex');
+}
+
+// AES-256-CBC Key Encryption for Database Storage
+export function encryptKey(text, secret = CRYPTO_SECRET) {
+  if (!text) return '';
+  const key = crypto.createHash('sha256').update(secret).digest(); // 32 bytes key
+  const iv = crypto.randomBytes(16);
+  const cipher = crypto.createCipheriv('aes-256-cbc', key, iv);
+  let encrypted = cipher.update(text, 'utf8', 'hex');
+  encrypted += cipher.final('hex');
+  return `${iv.toString('hex')}:${encrypted}`;
+}
+
+// AES-256-CBC Key Decryption
+export function decryptKey(payload, secret = CRYPTO_SECRET) {
+  if (!payload) return '';
+  try {
+    const parts = payload.split(':');
+    if (parts.length !== 2) return payload; // Fallback if plain
+    const [ivHex, encrypted] = parts;
+    const key = crypto.createHash('sha256').update(secret).digest();
+    const iv = Buffer.from(ivHex, 'hex');
+    const decipher = crypto.createDecipheriv('aes-256-cbc', key, iv);
+    let decrypted = decipher.update(encrypted, 'hex', 'utf8');
+    decrypted += decipher.final('utf8');
+    return decrypted;
+  } catch (err) {
+    console.warn('[Crypto] Decryption notice:', err.message);
+    return payload;
+  }
+}
+
 class GeminiKeyPool {
   constructor() {
-    this.keys = []; // Array of { key: string, status: 'active'|'rate_limited'|'invalid', callCount: number, lastUsed: number|null, rateLimitedUntil: number|null, errorMsg: string }
+    this.keys = []; // Array of { id, key, hash, masked, status, callCount, lastUsed, rateLimitedUntil, errorMsg }
     this.currentIndex = 0;
     this.initialized = false;
   }
@@ -11,28 +50,60 @@ class GeminiKeyPool {
   async init() {
     if (this.initialized) return;
     try {
-      const [rows] = await pool.query(`SELECT value FROM system_configs WHERE key_name = 'gemini_api_keys'`);
+      // 1. Try loading from secure api_keys_vault table
+      let [vaultRows] = await pool.query(
+        `SELECT id, key_hash, encrypted_key, masked_key, status, call_count, last_used_at, rate_limited_until, error_msg 
+         FROM api_keys_vault ORDER BY id ASC`
+      );
+
       let keyList = [];
-      if (rows.length > 0 && rows[0].value) {
+
+      if (vaultRows && vaultRows.length > 0) {
+        // Vault has keys: Decrypt on-the-fly in memory
+        this.keys = vaultRows.map(row => {
+          const rawKey = decryptKey(row.encrypted_key);
+          return {
+            id: row.id,
+            key: rawKey,
+            hash: row.key_hash || sha256Hash(rawKey),
+            masked: row.masked_key || this.maskKey(rawKey),
+            status: row.status || 'active',
+            callCount: row.call_count || 0,
+            lastUsed: row.last_used_at || null,
+            rateLimitedUntil: row.rate_limited_until || null,
+            errorMsg: row.error_msg || ''
+          };
+        });
+        this.initialized = true;
+        console.log(`[KeyPool] Loaded ${this.keys.length} API keys from secure SHA-256 api_keys_vault.`);
+        return;
+      }
+
+      // 2. Migration fallback: If vault is empty, load from legacy system_configs or .env
+      const [legacyRows] = await pool.query(`SELECT value FROM system_configs WHERE key_name = 'gemini_api_keys'`);
+      if (legacyRows.length > 0 && legacyRows[0].value) {
         try {
-          keyList = JSON.parse(rows[0].value);
+          keyList = JSON.parse(legacyRows[0].value);
         } catch {
-          keyList = rows[0].value.split(',').map(k => k.trim()).filter(Boolean);
+          keyList = legacyRows[0].value.split(',').map(k => k.trim()).filter(Boolean);
         }
       }
 
-      // Check env fallback
       if (keyList.length === 0 && process.env.GEMINI_API_KEYS) {
         keyList = process.env.GEMINI_API_KEYS.split(',').map(k => k.trim()).filter(Boolean);
       } else if (keyList.length === 0 && process.env.GEMINI_API_KEY) {
         keyList = [process.env.GEMINI_API_KEY.trim()];
       }
 
-      this.setKeys(keyList);
+      // Populate vault with SHA-256 hashed and encrypted records
+      if (keyList.length > 0) {
+        await this.saveKeysToDB(keyList);
+      }
+
       this.initialized = true;
-      console.log(`[KeyPool] Initialized with ${this.keys.length} API keys using @google/genai SDK.`);
+      console.log(`[KeyPool] Initialized with ${this.keys.length} API keys secured with SHA-256.`);
     } catch (err) {
-      console.error('[KeyPool] Failed to load keys from DB:', err.message);
+      console.error('[KeyPool] Failed to load keys from DB vault:', err.message);
     }
   }
 
@@ -44,6 +115,7 @@ class GeminiKeyPool {
       return {
         id: index + 1,
         key: cleanKey,
+        hash: sha256Hash(cleanKey),
         masked: this.maskKey(cleanKey),
         status: existing ? existing.status : 'active',
         callCount: existing ? existing.callCount : 0,
@@ -62,11 +134,28 @@ class GeminiKeyPool {
 
   async saveKeysToDB(keyList) {
     const cleanList = keyList.map(k => k.trim()).filter(Boolean);
+
+    // Save encrypted & SHA-256 hashed keys into api_keys_vault
+    for (const rawKey of cleanList) {
+      const hash = sha256Hash(rawKey);
+      const encrypted = encryptKey(rawKey);
+      const masked = this.maskKey(rawKey);
+
+      await pool.query(
+        `INSERT INTO api_keys_vault (key_hash, encrypted_key, masked_key, status) 
+         VALUES (?, ?, ?, 'active') 
+         ON DUPLICATE KEY UPDATE encrypted_key = VALUES(encrypted_key), masked_key = VALUES(masked_key), status = 'active'`,
+        [hash, encrypted, masked]
+      );
+    }
+
+    // Mirror to system_configs for legacy compatibility
     await pool.query(
       `INSERT INTO system_configs (key_name, value) VALUES ('gemini_api_keys', ?) 
        ON DUPLICATE KEY UPDATE value = ?`,
       [JSON.stringify(cleanList), JSON.stringify(cleanList)]
     );
+
     this.setKeys(cleanList);
     return this.getStatus();
   }
@@ -84,6 +173,7 @@ class GeminiKeyPool {
       }
       return {
         id: k.id,
+        hash: k.hash ? k.hash.substring(0, 16) + '...' : '',
         masked: k.masked,
         status: effectiveStatus,
         callCount: k.callCount,
@@ -100,6 +190,10 @@ class GeminiKeyPool {
       k.status = 'active';
       k.rateLimitedUntil = null;
       k.errorMsg = '';
+    });
+    // Reset status in DB vault
+    pool.query(`UPDATE api_keys_vault SET status = 'active', rate_limited_until = NULL, error_msg = NULL`).catch(err => {
+      console.warn('[KeyVault] Failed to reset DB statuses:', err.message);
     });
     return this.getStatus();
   }
@@ -179,6 +273,13 @@ class GeminiKeyPool {
         keyObj.status = 'active';
         keyObj.errorMsg = '';
 
+        if (keyObj.hash) {
+          pool.query(
+            `UPDATE api_keys_vault SET call_count = ?, last_used_at = ?, status = 'active' WHERE key_hash = ?`,
+            [keyObj.callCount, keyObj.lastUsed, keyObj.hash]
+          ).catch(() => {});
+        }
+
         return {
           ...result,
           keyUsed: { id: keyObj.id, masked: keyObj.masked },
@@ -195,11 +296,25 @@ class GeminiKeyPool {
           keyObj.rateLimitedUntil = Date.now() + 60000;
           keyObj.errorMsg = 'Rate Limit / Quota Exceeded (429)';
           rotationLogs.push(`Key #${keyObj.id} hit 429 Quota Limit. Marked rate-limited (60s cooldown). Falling back to next key...`);
+
+          if (keyObj.hash) {
+            pool.query(
+              `UPDATE api_keys_vault SET status = 'rate_limited', rate_limited_until = ?, error_msg = ? WHERE key_hash = ?`,
+              [keyObj.rateLimitedUntil, keyObj.errorMsg, keyObj.hash]
+            ).catch(() => {});
+          }
         } else if (status === 400 && (errMsg.includes('API_KEY_INVALID') || errMsg.includes('invalid') || errMsg.includes('API key not valid'))) {
           // Invalid API Key
           keyObj.status = 'invalid';
           keyObj.errorMsg = 'Invalid API Key';
           rotationLogs.push(`Key #${keyObj.id} is invalid. Marked inactive. Falling back to next key...`);
+
+          if (keyObj.hash) {
+            pool.query(
+              `UPDATE api_keys_vault SET status = 'invalid', error_msg = ? WHERE key_hash = ?`,
+              [keyObj.errorMsg, keyObj.hash]
+            ).catch(() => {});
+          }
         } else {
           // General error - still try next key
           rotationLogs.push(`Key #${keyObj.id} error (${errMsg}). Falling back to next key...`);
@@ -280,6 +395,13 @@ class GeminiKeyPool {
         keyObj.status = 'active';
         keyObj.errorMsg = '';
 
+        if (keyObj.hash) {
+          pool.query(
+            `UPDATE api_keys_vault SET call_count = ?, last_used_at = ?, status = 'active' WHERE key_hash = ?`,
+            [keyObj.callCount, keyObj.lastUsed, keyObj.hash]
+          ).catch(() => {});
+        }
+
         return {
           text: fullText,
           finishReason,
@@ -298,10 +420,24 @@ class GeminiKeyPool {
           keyObj.rateLimitedUntil = Date.now() + 60000;
           keyObj.errorMsg = 'Rate Limit / Quota Exceeded (429)';
           rotationLogs.push(`Key #${keyObj.id} hit 429 Quota Limit. Falling back to next key...`);
+
+          if (keyObj.hash) {
+            pool.query(
+              `UPDATE api_keys_vault SET status = 'rate_limited', rate_limited_until = ?, error_msg = ? WHERE key_hash = ?`,
+              [keyObj.rateLimitedUntil, keyObj.errorMsg, keyObj.hash]
+            ).catch(() => {});
+          }
         } else if (status === 400 && (errMsg.includes('API_KEY_INVALID') || errMsg.includes('invalid') || errMsg.includes('API key not valid'))) {
           keyObj.status = 'invalid';
           keyObj.errorMsg = 'Invalid API Key';
           rotationLogs.push(`Key #${keyObj.id} is invalid. Falling back to next key...`);
+
+          if (keyObj.hash) {
+            pool.query(
+              `UPDATE api_keys_vault SET status = 'invalid', error_msg = ? WHERE key_hash = ?`,
+              [keyObj.errorMsg, keyObj.hash]
+            ).catch(() => {});
+          }
         } else {
           rotationLogs.push(`Key #${keyObj.id} error (${errMsg}). Falling back to next key...`);
         }
