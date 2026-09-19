@@ -4,11 +4,13 @@ import {
   KeyRound, 
   Cpu, 
   Layers, 
-  ArrowLeft 
+  ArrowLeft,
+  BookPlus
 } from 'lucide-react';
 import LorebookManager from './LorebookManager';
 import KeyPoolManager from './KeyPoolManager';
 import InstructionEditor from './InstructionEditor';
+import { api } from '../services/api';
 
 export default function LorebookDashboard({ onBackToStudio }) {
   const [activeTab, setActiveTab] = useState('lore');

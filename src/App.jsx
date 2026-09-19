@@ -6,6 +6,38 @@ import LoginModal from './components/LoginModal';
 import { api } from './services/api';
 import { estimateTokens } from './services/tokenEstimator';
 
+// Default first-session guide message (inserted as model response on first session)
+const FIRST_SESSION_GUIDE = `# 🌌 Chào mừng đến với StoryContainer Engine!
+
+Đây là hướng dẫn nhanh cho bạn:
+
+## 🔑 Bước 1: Thêm API Key (BYOK — Bring Your Own Key)
+Vào tab **World Config & Lorebook** (hoặc \`Ctrl+K\`) → phần **API Key Pool** → dán Gemini API Key của bạn.
+Lấy key miễn phí tại: [Google AI Studio](https://aistudio.google.com/apikey)
+
+## 💬 Bước 2: Bắt đầu viết truyện
+Gõ prompt vào ô chat phía dưới → AI sẽ mô phỏng thế giới và viết tiểu thuyết theo chỉ dẫn của bạn.
+
+## 📖 Bước 3: Lorebook — Xây dựng thế giới
+Thêm nhân vật, địa điểm, hệ phép thuật, phe phái vào Lorebook.
+AI sẽ tự động truy xuất lore liên quan (RAG) khi bạn chat.
+
+## ⚙️ Các nút hữu ích
+- **Sửa prompt** (Edit) — Sửa lại lời nói quá khứ
+- **Regenerate** (↻) — Bắt AI viết lại
+- **Xóa** (🗑) — Xóa tin nhắn
+- **\`<thinking>\`** — Xem AI suy nghĩ gì bên trong
+
+## 🔐 Tài khoản
+- Đăng ký tài khoản riêng để lưu session & API key cá nhân
+- Tài khoản dev (ID: 0 / pass: 0000) dùng để test — không có API key
+
+---
+*Xóa tin nhắn này khi bạn đã sẵn sàng. Chúc vui! 🚀*`;
+
+const DEFAULT_FIRST_SESSION_TITLE = 'tôi chuyển sinh thành con ng và báo thù các INTP';
+const DEFAULT_FIRST_PROMPT = 'gemigay884# sau khi bị các INTP hành cho lag máy với 20 chủ đề ko liên quan đến nhau đã nuôi ý định báo thù các INTP cho ra bã để họ nghĩ ít lại';
+
 export default function App() {
   const [currentView, setCurrentView] = useState('studio'); // 'studio' | 'lorebook'
   const [sessions, setSessions] = useState([]);
@@ -39,7 +71,7 @@ export default function App() {
   const [keyStats, setKeyStats] = useState([]);
   const [errorMessage, setErrorMessage] = useState(null);
 
-  // Auth state (Default dev account: ID 0 / 'dev', password '0000')
+  // Auth state — default to dev account (open-source test, id:0, no API key)
   const [currentUser, setCurrentUser] = useState(() => {
     const saved = localStorage.getItem('storycontainer_user');
     if (saved) {
@@ -54,17 +86,38 @@ export default function App() {
       username: 'dev',
       displayName: 'INTP Dev Architect',
       role: 'developer',
-      avatar: 'dev_0'
+      avatar: null
     };
     localStorage.setItem('storycontainer_user', JSON.stringify(defaultDev));
     return defaultDev;
   });
   const [isLoginModalOpen, setIsLoginModalOpen] = useState(false);
 
+  // Language state
+  const [language, setLanguage] = useState(() => {
+    const saved = localStorage.getItem('storycontainer_language');
+    return saved || 'vi';
+  });
+
   // Load Initial Data
   useEffect(() => {
     loadSessions();
     loadKeyPoolTelemetry();
+
+    // Listen for auth:logout event (from api.js 401 handler)
+    const handleAuthLogout = () => {
+      const defaultDev = {
+        id: 0,
+        username: 'dev',
+        displayName: 'INTP Dev Architect',
+        role: 'developer',
+        avatar: null
+      };
+      setCurrentUser(defaultDev);
+      localStorage.setItem('storycontainer_user', JSON.stringify(defaultDev));
+      loadSessions();
+    };
+    window.addEventListener('auth:logout', handleAuthLogout);
 
     // Hotkey listener for Ctrl+K or Cmd+K
     const handleKeyDown = (e) => {
@@ -74,8 +127,17 @@ export default function App() {
       }
     };
     window.addEventListener('keydown', handleKeyDown);
-    return () => window.removeEventListener('keydown', handleKeyDown);
+    return () => {
+      window.removeEventListener('keydown', handleKeyDown);
+      window.removeEventListener('auth:logout', handleAuthLogout);
+    };
   }, []);
+
+  // Reload sessions when user changes
+  useEffect(() => {
+    loadSessions();
+    loadKeyPoolTelemetry();
+  }, [currentUser?.id]);
 
   const loadSessions = async () => {
     try {
@@ -84,10 +146,29 @@ export default function App() {
       if (data.length > 0 && !activeSessionId) {
         setActiveSessionId(data[0].id);
       } else if (data.length === 0) {
-        // Create initial chronicle session if none exists
-        const newSession = await api.createSession('Chronicle Alpha: The Resonant Grid');
+        // First session for this user → create with default title + onboarding guide
+        const newSession = await api.createSession(DEFAULT_FIRST_SESSION_TITLE);
         setSessions([newSession]);
         setActiveSessionId(newSession.id);
+
+        // Insert default first prompt and guide message via direct API
+        try {
+          // Insert user's first message (default prompt)
+          await fetch('/api/chat/first-session-seed', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              sessionId: newSession.id,
+              userMessage: DEFAULT_FIRST_PROMPT,
+              guideMessage: FIRST_SESSION_GUIDE
+            })
+          }).catch(() => {
+            // Fallback: insert directly via messages endpoints won't work (no direct insert)
+            // The guide will be shown as a local-only message
+          });
+        } catch (seedErr) {
+          console.warn('First session seed failed (non-critical):', seedErr);
+        }
       }
     } catch (err) {
       console.error('Failed to load sessions:', err);
@@ -176,9 +257,25 @@ export default function App() {
     }
   };
 
+  // BYOK Guard: Check if user has API keys before sending chat
+  const checkByokKeys = () => {
+    if (keyStats.length === 0) {
+      setErrorMessage(
+        currentUser?.id === 0
+          ? 'Tài khoản dev (test) chưa có API Key. Vào World Config & Lorebook → Key Pool để thêm key, hoặc đăng ký tài khoản riêng.'
+          : 'Chưa có API Key! Vào World Config & Lorebook → Key Pool để thêm Gemini API Key (BYOK). Lấy key tại: https://aistudio.google.com/apikey'
+      );
+      return false;
+    }
+    return true;
+  };
+
   // Streaming Chat Execution with Typing Effect & RAG Key Pool Fallback
   const executeChatStream = async (userPrompt) => {
     if (!userPrompt?.trim() || !activeSessionId || isLoading || isStreaming) return;
+
+    // BYOK check
+    if (!checkByokKeys()) return;
 
     const cleanPrompt = userPrompt.trim();
     setIsLoading(true);
@@ -270,6 +367,9 @@ export default function App() {
         return;
       }
 
+      // BYOK check before regenerate
+      if (!checkByokKeys()) return;
+
       // Save & Re-submit flow (User prompt editing)
       // 1. Truncate DB from this prompt onwards (removes this turn and downstream)
       await api.truncateMessagesFrom(activeSessionId, messageId);
@@ -310,6 +410,10 @@ export default function App() {
   // Regenerate turn (for both AI response or User prompt)
   const handleRegenerateMessage = async (msg) => {
     if (!activeSessionId || isLoading || isStreaming) return;
+
+    // BYOK check
+    if (!checkByokKeys()) return;
+
     try {
       let promptToReRun = '';
       let truncateFromId = msg.id;
@@ -347,10 +451,26 @@ export default function App() {
   };
 
   const handleLogout = () => {
-    localStorage.removeItem('storycontainer_user');
     localStorage.removeItem('storycontainer_token');
-    setCurrentUser(null);
-    setIsLoginModalOpen(true);
+    const defaultDev = {
+      id: 0,
+      username: 'dev',
+      displayName: 'INTP Dev Architect',
+      role: 'developer',
+      avatar: null
+    };
+    localStorage.setItem('storycontainer_user', JSON.stringify(defaultDev));
+    setCurrentUser(defaultDev);
+    setActiveSessionId(null);
+  };
+
+  const handleLanguageChange = (lang) => {
+    setLanguage(lang);
+    localStorage.setItem('storycontainer_language', lang);
+    // Persist to server if logged in as registered user
+    if (currentUser?.id > 0) {
+      api.updateLanguage(lang).catch(() => {});
+    }
   };
 
   return (
@@ -367,6 +487,8 @@ export default function App() {
         currentUser={currentUser}
         onOpenLogin={() => setIsLoginModalOpen(true)}
         onLogout={handleLogout}
+        language={language}
+        onLanguageChange={handleLanguageChange}
       />
 
       {/* Error Alert Banner */}
@@ -431,11 +553,14 @@ export default function App() {
         )}
       </main>
 
-      {/* Login & Dev Matrix Modal */}
+      {/* Login & Register Modal */}
       <LoginModal
         isOpen={isLoginModalOpen}
         onClose={() => setIsLoginModalOpen(false)}
-        onLoginSuccess={(u) => setCurrentUser(u)}
+        onLoginSuccess={(u) => {
+          setCurrentUser(u);
+          setActiveSessionId(null); // Reset to load user's sessions
+        }}
       />
     </div>
   );

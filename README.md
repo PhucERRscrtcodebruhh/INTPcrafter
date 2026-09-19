@@ -62,16 +62,21 @@ Dưới đây là danh sách những thứ mà tôi đã nhét vào để phục
 - Tự động bắt từ khóa (entity titles & aliases) trong prompt để truy vấn fulltext từ bảng `lore_entries` của MySQL.
 - Bơm thẳng thông tin nhân vật, hệ thống ma pháp, địa danh và quy tắc bất biến vào System Prompt trước khi AI kịp bịa chuyện.
 
-### 9. 🗝️ Bể chứa Key Gemini luân chuyển (Key Pool Du kích)
-- Quản lý từ 5 đến 10 API Key Google Gemini chạy qua `@google/genai` mới nhất.
-- Tự động phát hiện lỗi `429 Too Many Requests`. Nếu key này hết quota, nó sẽ tự động đá bóng sang key tiếp theo mà không làm gián đoạn câu văn đang viết dở.
+### 9. 🔑 Bể chứa Key Gemini cô lập theo User (BYOK — Bring Your Own Key)
+- Nguyên lý **Zero-Shared-Key**: Server không cấp sẵn key chung. Mỗi người dùng tự quản lý từ 1 đến 10 API Key cá nhân trong vault riêng (`user_api_keys`).
+- Mã hóa **SHA-256 + AES-256-CBC**: Key được băm SHA-256 để chống trùng lặp và mã hóa AES-256-CBC bằng `CRYPTO_SECRET` trước khi lưu vào MySQL.
+- Tự động luân chuyển (Round-Robin) và phát hiện lỗi `429 Too Many Requests` với 60s cooldown per-key.
 
-### 10. 🚪 Panel Đăng Nhập Dev Matrix Bảo Mật "Cấp Mẫu Giáo"
-- Một modal đăng nhập kính mờ chuẩn cyberpunk cho nó chuyên nghiệp.
-- **Tài khoản mặc định**:
-  - ID / Tài khoản: `0` (hoặc `dev`)
-  - Mật khẩu: `0000`
-- Có cả nút bấm **"Quick Dev Login"** để tự điền và đăng nhập trong 0.1 giây. Hiển thị badge Dev phát sáng xanh lè trên thanh Navbar.
+### 10. 🔐 Hệ Thống Xác Thực Đăng Ký / Đăng Nhập (Bcrypt + JWT)
+- **Đăng ký tài khoản cá nhân**: Băm mật khẩu bằng `bcrypt` (salt rounds = 10), phát hành JWT token 7 ngày.
+- **Tài khoản test mã nguồn mở (Mặc định)**:
+  - Account ID / Username: `0` (hoặc `dev`)
+  - Password: `0000`
+  - *Lưu ý*: Tài khoản dev dùng để trải nghiệm giao diện test mã nguồn mở. Cần đăng ký tài khoản riêng + thêm API Key (BYOK) để chat với AI.
+- **Tính năng mở rộng**:
+  - 🌐 **Đa ngôn ngữ (Multilingual)**: Hỗ trợ 4 ngôn ngữ (Tiếng Việt 🇻🇳, English 🇺🇸, 中文 🇨🇳, 한국어 🇰🇷).
+  - 🖼️ **Avatar Upload**: Tải ảnh đại diện cá nhân (Base64 data URL).
+  - 📖 **New Lore Book**: Nút bấm tạo trang lorebook mới nhanh chóng.
 
 ---
 

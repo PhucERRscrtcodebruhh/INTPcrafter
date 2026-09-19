@@ -2,7 +2,7 @@ import express from 'express';
 import cors from 'cors';
 import dotenv from 'dotenv';
 import { pool } from './db.js';
-import { keyPool } from './geminiPool.js';
+import { keyPool, getPoolForUser, addUserKey, removeUserKey, getUserKeyStatus, resetUserKeys } from './geminiPool.js';
 import { RAGEngine } from './ragEngine.js';
 import {
   getModelContextLimit,
@@ -10,6 +10,7 @@ import {
   calculateContextTokens,
   applyRollingContext
 } from './tokenUtils.js';
+import { authRouter, optionalAuth, requireAuth } from './auth.js';
 
 dotenv.config();
 
@@ -18,7 +19,10 @@ const app = express();
 app.use(cors());
 app.use(express.json({ limit: '10mb' }));
 
-// Health Check
+// Mount Auth Router
+app.use('/api/auth', authRouter);
+
+// Health Check (public)
 app.get('/api/health', async (req, res) => {
   try {
     const [dbResult] = await pool.query('SELECT 1 as connected');
@@ -28,7 +32,7 @@ app.get('/api/health', async (req, res) => {
       dbConnected: dbResult?.[0]?.connected === 1,
       keysConfigured: keyStatus.length,
       activeKeys: keyStatus.filter(k => k.status === 'active').length,
-      engine: 'StoryContainer INTP Engine v1.0'
+      engine: 'StoryContainer INTP Engine v2.0 (BYOK)'
     });
   } catch (err) {
     res.status(500).json({ status: 'degraded', error: err.message });
@@ -36,38 +40,62 @@ app.get('/api/health', async (req, res) => {
 });
 
 // ==========================================
-// CHAT SESSIONS & MESSAGES
+// CHAT SESSIONS & MESSAGES (user-scoped)
 // ==========================================
 
-app.get('/api/sessions', async (req, res) => {
+app.get('/api/sessions', optionalAuth, async (req, res) => {
   try {
-    const [sessions] = await pool.query(
-      `SELECT s.id, s.title, s.created_at, 
-              COUNT(m.id) as message_count,
-              MAX(m.created_at) as last_message_at
-       FROM chat_sessions s
-       LEFT JOIN chat_messages m ON s.id = m.session_id
-       GROUP BY s.id
-       ORDER BY COALESCE(MAX(m.created_at), s.created_at) DESC`
-    );
+    const userId = req.user?.id || 0;
+    let sessions;
+
+    if (userId > 0) {
+      // Registered user: show only their sessions
+      [sessions] = await pool.query(
+        `SELECT s.id, s.title, s.user_id, s.created_at, 
+                COUNT(m.id) as message_count,
+                MAX(m.created_at) as last_message_at
+         FROM chat_sessions s
+         LEFT JOIN chat_messages m ON s.id = m.session_id
+         WHERE s.user_id = ?
+         GROUP BY s.id
+         ORDER BY COALESCE(MAX(m.created_at), s.created_at) DESC`,
+        [userId]
+      );
+    } else {
+      // Dev/anonymous: show sessions with NULL or 0 user_id
+      [sessions] = await pool.query(
+        `SELECT s.id, s.title, s.user_id, s.created_at, 
+                COUNT(m.id) as message_count,
+                MAX(m.created_at) as last_message_at
+         FROM chat_sessions s
+         LEFT JOIN chat_messages m ON s.id = m.session_id
+         WHERE s.user_id IS NULL OR s.user_id = 0
+         GROUP BY s.id
+         ORDER BY COALESCE(MAX(m.created_at), s.created_at) DESC`
+      );
+    }
     res.json(sessions);
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
 });
 
-app.post('/api/sessions', async (req, res) => {
+app.post('/api/sessions', optionalAuth, async (req, res) => {
   try {
+    const userId = req.user?.id || 0;
     const id = `session_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
     const title = (req.body.title || 'Untitled Chronicle').trim();
-    await pool.query(`INSERT INTO chat_sessions (id, title) VALUES (?, ?)`, [id, title]);
-    res.status(201).json({ id, title, created_at: new Date() });
+    await pool.query(
+      `INSERT INTO chat_sessions (id, title, user_id) VALUES (?, ?, ?)`,
+      [id, title, userId > 0 ? userId : null]
+    );
+    res.status(201).json({ id, title, user_id: userId, created_at: new Date() });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
 });
 
-app.put('/api/sessions/:id', async (req, res) => {
+app.put('/api/sessions/:id', optionalAuth, async (req, res) => {
   try {
     const { title } = req.body;
     if (!title) return res.status(400).json({ error: 'Title required' });
@@ -78,7 +106,7 @@ app.put('/api/sessions/:id', async (req, res) => {
   }
 });
 
-app.delete('/api/sessions/:id', async (req, res) => {
+app.delete('/api/sessions/:id', optionalAuth, async (req, res) => {
   try {
     const sessionId = req.params.id;
     await pool.query(`DELETE FROM chat_messages WHERE session_id = ?`, [sessionId]);
@@ -89,7 +117,7 @@ app.delete('/api/sessions/:id', async (req, res) => {
   }
 });
 
-app.get('/api/sessions/:id/messages', async (req, res) => {
+app.get('/api/sessions/:id/messages', optionalAuth, async (req, res) => {
   try {
     const sessionId = req.params.id;
     const [messages] = await pool.query(
@@ -142,7 +170,7 @@ app.get('/api/sessions/:id/messages', async (req, res) => {
 });
 
 // Update specific message content (edit prompt or story text)
-app.put('/api/messages/:id', async (req, res) => {
+app.put('/api/messages/:id', optionalAuth, async (req, res) => {
   try {
     const messageId = req.params.id;
     const { content } = req.body;
@@ -158,7 +186,7 @@ app.put('/api/messages/:id', async (req, res) => {
 });
 
 // Delete specific message
-app.delete('/api/messages/:id', async (req, res) => {
+app.delete('/api/messages/:id', optionalAuth, async (req, res) => {
   try {
     const messageId = req.params.id;
     await pool.query(`DELETE FROM chat_messages WHERE id = ?`, [messageId]);
@@ -169,7 +197,7 @@ app.delete('/api/messages/:id', async (req, res) => {
 });
 
 // Truncate session messages from a specific point onward (for edit & regenerate flow)
-app.delete('/api/sessions/:sessionId/messages/from/:messageId', async (req, res) => {
+app.delete('/api/sessions/:sessionId/messages/from/:messageId', optionalAuth, async (req, res) => {
   try {
     const { sessionId, messageId } = req.params;
     await pool.query(`DELETE FROM chat_messages WHERE session_id = ? AND id >= ?`, [sessionId, messageId]);
@@ -179,41 +207,11 @@ app.delete('/api/sessions/:sessionId/messages/from/:messageId', async (req, res)
   }
 });
 
-// Authentication Endpoint (Default dev: ID 0 / 'dev', password '0000')
-app.post('/api/auth/login', async (req, res) => {
-  const { username, password } = req.body;
-  if (!username || !password) {
-    return res.status(400).json({ error: 'Username/ID and password are required' });
-  }
-
-  const uStr = String(username).trim().toLowerCase();
-  const pStr = String(password).trim();
-
-  // Default dev account credentials
-  if ((uStr === '0' || uStr === 'dev') && pStr === '0000') {
-    return res.json({
-      success: true,
-      user: {
-        id: 0,
-        username: 'dev',
-        displayName: 'INTP Dev Architect',
-        role: 'developer',
-        avatar: 'dev_0'
-      },
-      token: `dev_token_${Date.now()}`
-    });
-  }
-
-  return res.status(401).json({
-    error: 'Sai tài khoản hoặc mật khẩu. Mặc định là tài khoản ID: 0 (hoặc "dev") và mật khẩu: "0000".'
-  });
-});
-
 // ==========================================
-// CORE GENERATION & INTP RAG ENGINE
+// CORE GENERATION & INTP RAG ENGINE (BYOK per-user)
 // ==========================================
 
-app.post('/api/chat', async (req, res) => {
+app.post('/api/chat', optionalAuth, async (req, res) => {
   const {
     sessionId,
     prompt,
@@ -229,8 +227,17 @@ app.post('/api/chat', async (req, res) => {
   }
 
   const cleanPrompt = prompt.trim();
+  const userId = req.user?.id || 0;
 
   try {
+    // Load per-user key pool (BYOK)
+    const userKeyPool = await getPoolForUser(userId);
+    if (userKeyPool.keys.length === 0) {
+      return res.status(400).json({
+        error: 'NO_API_KEYS: Bạn chưa thêm Gemini API Key. Vào World Config & Lorebook → Key Pool để thêm key (BYOK).'
+      });
+    }
+
     const [historyRows] = await pool.query(
       `SELECT id, role, content FROM chat_messages WHERE session_id = ? ORDER BY id ASC`,
       [sessionId]
@@ -274,7 +281,7 @@ app.post('/api/chat', async (req, res) => {
       [sessionId, cleanPrompt, retrievedLoreIds]
     );
 
-    const result = await keyPool.executeWithFallback({
+    const result = await userKeyPool.executeWithFallback({
       model,
       contents,
       systemInstruction: fullSystemInstruction,
@@ -327,8 +334,8 @@ app.post('/api/chat', async (req, res) => {
   }
 });
 
-// SSE Streaming Generation Endpoint
-app.post('/api/chat/stream', async (req, res) => {
+// SSE Streaming Generation Endpoint (BYOK per-user)
+app.post('/api/chat/stream', optionalAuth, async (req, res) => {
   const {
     sessionId,
     prompt,
@@ -344,6 +351,20 @@ app.post('/api/chat/stream', async (req, res) => {
   }
 
   const cleanPrompt = prompt.trim();
+  const userId = req.user?.id || 0;
+
+  // Load per-user key pool (BYOK)
+  let userKeyPool;
+  try {
+    userKeyPool = await getPoolForUser(userId);
+    if (userKeyPool.keys.length === 0) {
+      return res.status(400).json({
+        error: 'NO_API_KEYS: Bạn chưa thêm Gemini API Key. Vào World Config & Lorebook → Key Pool để thêm key (BYOK).'
+      });
+    }
+  } catch (poolErr) {
+    return res.status(500).json({ error: 'Failed to load key pool: ' + poolErr.message });
+  }
 
   res.setHeader('Content-Type', 'text/event-stream');
   res.setHeader('Cache-Control', 'no-cache');
@@ -396,7 +417,7 @@ app.post('/api/chat/stream', async (req, res) => {
 
     res.write(`event: rag\ndata: ${JSON.stringify({ retrievedLore, retrievedLoreIds })}\n\n`);
 
-    const result = await keyPool.executeStreamWithFallback({
+    const result = await userKeyPool.executeStreamWithFallback({
       model,
       contents,
       systemInstruction: fullSystemInstruction,
@@ -453,7 +474,7 @@ app.post('/api/chat/stream', async (req, res) => {
 });
 
 // ==========================================
-// LOREBOOK DATABASE CRUD
+// LOREBOOK DATABASE CRUD (public)
 // ==========================================
 
 app.get('/api/lore', async (req, res) => {
@@ -535,31 +556,63 @@ app.delete('/api/lore/:id', async (req, res) => {
 });
 
 // ==========================================
-// API KEY POOL & CONFIG
+// API KEY POOL & CONFIG (per-user BYOK)
 // ==========================================
 
-app.get('/api/keys', async (req, res) => {
+// Get user's keys
+app.get('/api/keys', optionalAuth, async (req, res) => {
   try {
-    await keyPool.init();
-    res.json(keyPool.getStatus());
+    const userId = req.user?.id || 0;
+    const status = await getUserKeyStatus(userId);
+    res.json(status);
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
 });
 
-app.post('/api/keys', async (req, res) => {
+// Add a key for user (BYOK)
+app.post('/api/keys', optionalAuth, async (req, res) => {
   try {
-    const { keys } = req.body;
-    if (!Array.isArray(keys)) {
-      return res.status(400).json({ error: 'keys must be an array of strings' });
+    const userId = req.user?.id || 0;
+    const { key, keys } = req.body;
+
+    if (userId === 0) {
+      // Dev account: use legacy global pool
+      if (!Array.isArray(keys)) {
+        return res.status(400).json({ error: 'Dev account: keys must be an array of strings' });
+      }
+      const updatedStatus = await keyPool.saveKeysToDB(keys);
+      return res.json({ success: true, keys: updatedStatus });
     }
-    const updatedStatus = await keyPool.saveKeysToDB(keys);
+
+    // Registered user: add single key
+    const rawKey = key || (Array.isArray(keys) ? keys[0] : null);
+    if (!rawKey) {
+      return res.status(400).json({ error: 'API key is required.' });
+    }
+
+    const updatedStatus = await addUserKey(userId, rawKey);
     res.json({ success: true, keys: updatedStatus });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
 });
 
+// Remove a specific key for user
+app.delete('/api/keys/:keyId', optionalAuth, async (req, res) => {
+  try {
+    const userId = req.user?.id || 0;
+    if (userId === 0) {
+      return res.status(403).json({ error: 'Dev account cannot remove individual keys.' });
+    }
+    const updatedStatus = await removeUserKey(userId, parseInt(req.params.keyId, 10));
+    res.json({ success: true, keys: updatedStatus });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Test a single key (no auth needed)
 app.post('/api/keys/test', async (req, res) => {
   try {
     const { key } = req.body;
@@ -571,16 +624,18 @@ app.post('/api/keys/test', async (req, res) => {
   }
 });
 
-app.post('/api/keys/reset', async (req, res) => {
+// Reset user's key statuses
+app.post('/api/keys/reset', optionalAuth, async (req, res) => {
   try {
-    const updatedStatus = keyPool.resetStatuses();
+    const userId = req.user?.id || 0;
+    const updatedStatus = await resetUserKeys(userId);
     res.json({ success: true, keys: updatedStatus });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
 });
 
-// Master System Instruction
+// Master System Instruction (public)
 app.get('/api/config/instruction', async (req, res) => {
   try {
     const [rows] = await pool.query(`SELECT value FROM system_configs WHERE key_name = 'master_system_instruction'`);

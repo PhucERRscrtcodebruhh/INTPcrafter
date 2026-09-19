@@ -500,4 +500,184 @@ class GeminiKeyPool {
   }
 }
 
+// ==========================================
+// Per-User Key Pool (BYOK)
+// ==========================================
+
+// In-memory cache: userId -> { pool, lastAccess }
+const userPoolCache = new Map();
+const POOL_CACHE_TTL = 5 * 60 * 1000; // 5 minutes
+
+/**
+ * Factory: Get a GeminiKeyPool for a specific user.
+ * userId=0 (dev) → uses global api_keys_vault (legacy).
+ * userId>0 → uses user_api_keys table.
+ */
+export async function getPoolForUser(userId) {
+  const uid = parseInt(userId, 10) || 0;
+  const now = Date.now();
+
+  // Check cache
+  const cached = userPoolCache.get(uid);
+  if (cached && (now - cached.lastAccess) < POOL_CACHE_TTL) {
+    cached.lastAccess = now;
+    return cached.pool;
+  }
+
+  // Create fresh pool
+  const userPool = new GeminiKeyPool();
+
+  if (uid === 0) {
+    // Dev/legacy: load from global api_keys_vault
+    await userPool.init();
+  } else {
+    // Registered user: load from user_api_keys
+    try {
+      const [rows] = await pool.query(
+        `SELECT id, key_hash, encrypted_key, masked_key, status, call_count, last_used_at, rate_limited_until, error_msg 
+         FROM user_api_keys WHERE user_id = ? ORDER BY id ASC`,
+        [uid]
+      );
+
+      if (rows && rows.length > 0) {
+        userPool.keys = rows.map(row => {
+          const rawKey = decryptKey(row.encrypted_key);
+          return {
+            id: row.id,
+            key: rawKey,
+            hash: row.key_hash || sha256Hash(rawKey),
+            masked: row.masked_key || userPool.maskKey(rawKey),
+            status: row.status || 'active',
+            callCount: row.call_count || 0,
+            lastUsed: row.last_used_at || null,
+            rateLimitedUntil: row.rate_limited_until || null,
+            errorMsg: row.error_msg || ''
+          };
+        });
+      }
+      userPool.initialized = true;
+    } catch (err) {
+      console.error(`[KeyPool] Failed to load keys for user ${uid}:`, err.message);
+      userPool.initialized = true;
+    }
+  }
+
+  userPoolCache.set(uid, { pool: userPool, lastAccess: now });
+  return userPool;
+}
+
+/**
+ * Add a single API key for a user.
+ * Returns updated key status list.
+ */
+export async function addUserKey(userId, rawKey) {
+  const uid = parseInt(userId, 10);
+  if (!uid || uid <= 0) throw new Error('Invalid user ID. Dev account cannot add keys this way.');
+  if (!rawKey || !rawKey.trim()) throw new Error('API key cannot be empty.');
+
+  const cleanKey = rawKey.trim();
+
+  // Check max 10 keys per user
+  const [countRows] = await pool.query(
+    'SELECT COUNT(*) as total FROM user_api_keys WHERE user_id = ?', [uid]
+  );
+  if (countRows[0].total >= 10) {
+    throw new Error('Maximum 10 API keys per user.');
+  }
+
+  const hash = sha256Hash(cleanKey);
+  const encrypted = encryptKey(cleanKey);
+  const masked = `${cleanKey.slice(0, 6)}...${cleanKey.slice(-4)}`;
+
+  await pool.query(
+    `INSERT INTO user_api_keys (user_id, key_hash, encrypted_key, masked_key, status)
+     VALUES (?, ?, ?, ?, 'active')
+     ON DUPLICATE KEY UPDATE encrypted_key = VALUES(encrypted_key), masked_key = VALUES(masked_key), status = 'active'`,
+    [uid, hash, encrypted, masked]
+  );
+
+  // Invalidate cache
+  userPoolCache.delete(uid);
+
+  return getUserKeyStatus(uid);
+}
+
+/**
+ * Remove a specific API key for a user.
+ */
+export async function removeUserKey(userId, keyId) {
+  const uid = parseInt(userId, 10);
+  if (!uid || uid <= 0) throw new Error('Invalid user ID.');
+
+  await pool.query(
+    'DELETE FROM user_api_keys WHERE id = ? AND user_id = ?',
+    [keyId, uid]
+  );
+
+  // Invalidate cache
+  userPoolCache.delete(uid);
+
+  return getUserKeyStatus(uid);
+}
+
+/**
+ * Get masked key status list for a user.
+ */
+export async function getUserKeyStatus(userId) {
+  const uid = parseInt(userId, 10) || 0;
+  const now = Date.now();
+
+  if (uid === 0) {
+    // Dev: use global pool
+    const globalPool = await getPoolForUser(0);
+    return globalPool.getStatus();
+  }
+
+  const [rows] = await pool.query(
+    `SELECT id, key_hash, masked_key, status, call_count, last_used_at, rate_limited_until, error_msg
+     FROM user_api_keys WHERE user_id = ? ORDER BY id ASC`,
+    [uid]
+  );
+
+  return rows.map(k => {
+    let effectiveStatus = k.status;
+    if (effectiveStatus === 'rate_limited' && k.rate_limited_until && now > k.rate_limited_until) {
+      effectiveStatus = 'active';
+    }
+    return {
+      id: k.id,
+      hash: k.key_hash ? k.key_hash.substring(0, 16) + '...' : '',
+      masked: k.masked_key,
+      status: effectiveStatus,
+      callCount: k.call_count,
+      lastUsed: k.last_used_at,
+      rateLimitedUntil: k.rate_limited_until,
+      cooldownSecondsRemaining: k.rate_limited_until && k.rate_limited_until > now ? Math.ceil((k.rate_limited_until - now) / 1000) : 0,
+      errorMsg: k.error_msg
+    };
+  });
+}
+
+/**
+ * Reset all key statuses for a user.
+ */
+export async function resetUserKeys(userId) {
+  const uid = parseInt(userId, 10) || 0;
+
+  if (uid === 0) {
+    const globalPool = await getPoolForUser(0);
+    return globalPool.resetStatuses();
+  }
+
+  await pool.query(
+    `UPDATE user_api_keys SET status = 'active', rate_limited_until = NULL, error_msg = NULL WHERE user_id = ?`,
+    [uid]
+  );
+
+  // Invalidate cache
+  userPoolCache.delete(uid);
+
+  return getUserKeyStatus(uid);
+}
+
 export const keyPool = new GeminiKeyPool();

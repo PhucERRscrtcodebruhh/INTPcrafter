@@ -32,3 +32,6 @@ lerna-debug.log*
 *.sln
 *.sw?
 Thumbs.db
+
+.vercel
+.env*

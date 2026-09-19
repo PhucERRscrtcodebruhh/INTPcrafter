@@ -2,15 +2,27 @@ const BASE_URL = '/api';
 
 async function request(path, options = {}) {
   const url = `${BASE_URL}${path}`;
+  const headers = {
+    'Content-Type': 'application/json',
+    ...options.headers,
+  };
+  
+  const token = localStorage.getItem('storycontainer_token');
+  if (token) {
+    headers['Authorization'] = `Bearer ${token}`;
+  }
+
   const response = await fetch(url, {
-    headers: {
-      'Content-Type': 'application/json',
-      ...options.headers,
-    },
     ...options,
+    headers,
   });
 
   if (!response.ok) {
+    if (response.status === 401) {
+      localStorage.removeItem('storycontainer_token');
+      localStorage.removeItem('storycontainer_user');
+      window.dispatchEvent(new Event('auth:logout'));
+    }
     const errorData = await response.json().catch(() => ({}));
     const message = errorData.error || `HTTP ${response.status}: ${response.statusText}`;
     const err = new Error(message);
@@ -58,6 +70,20 @@ export const api = {
     method: 'POST',
     body: JSON.stringify({ username, password }),
   }),
+  register: (username, password) => request('/auth/register', {
+    method: 'POST',
+    body: JSON.stringify({ username, password }),
+  }),
+  getMe: () => request('/auth/me'),
+  uploadAvatar: (avatar) => request('/auth/avatar', {
+    method: 'POST',
+    body: JSON.stringify({ avatar })
+  }),
+  getAvatar: () => request('/auth/avatar'),
+  updateLanguage: (language) => request('/auth/language', {
+    method: 'PUT',
+    body: JSON.stringify({ language })
+  }),
 
   // Chat Execution
   sendChat: (payload) => request('/chat', {
@@ -67,13 +93,22 @@ export const api = {
 
   sendChatStream: async (payload, { onRag, onChunk, onDone, onError }) => {
     try {
+      const token = localStorage.getItem('storycontainer_token');
+      const headers = { 'Content-Type': 'application/json' };
+      if (token) headers['Authorization'] = `Bearer ${token}`;
+
       const response = await fetch('/api/chat/stream', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers,
         body: JSON.stringify(payload),
       });
 
       if (!response.ok) {
+        if (response.status === 401) {
+          localStorage.removeItem('storycontainer_token');
+          localStorage.removeItem('storycontainer_user');
+          window.dispatchEvent(new Event('auth:logout'));
+        }
         const errorData = await response.json().catch(() => ({}));
         throw new Error(errorData.error || `HTTP error ${response.status}`);
       }
@@ -154,6 +189,13 @@ export const api = {
   }),
   resetKeys: () => request('/keys/reset', {
     method: 'POST',
+  }),
+  addKey: (key) => request('/keys', { 
+    method: 'POST', 
+    body: JSON.stringify({ key }) 
+  }),
+  removeKey: (keyId) => request('/keys/' + keyId, { 
+    method: 'DELETE' 
   }),
 
   // Master System Instruction

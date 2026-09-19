@@ -86,6 +86,21 @@ export default function LorebookManager() {
     }
   };
 
+  const handleQuickCreateBlank = async () => {
+    try {
+      await ClientRAGService.saveLoreEntry({
+        title: 'Untitled Lore ' + Date.now().toString().slice(-4),
+        category: 'General',
+        aliases: '',
+        rules: '',
+        content: ''
+      });
+      loadLore();
+    } catch (err) {
+      alert('Failed to create blank lore: ' + err.message);
+    }
+  };
+
   const handleSubmit = async (e) => {
     e.preventDefault();
     if (!formData.title.trim()) {
@@ -126,6 +141,14 @@ export default function LorebookManager() {
             title="Refresh database"
           >
             <RefreshCw size={14} className={isLoading ? 'animate-spin' : ''} />
+          </button>
+          <button
+            onClick={handleQuickCreateBlank}
+            className="flex items-center space-x-1.5 px-3 py-1.5 rounded bg-cyber-900 border border-cyan-500/40 text-cyan-300 text-xs font-semibold hover:bg-cyan-950 transition-all"
+            title="Create empty lore entry instantly"
+          >
+            <Plus size={14} />
+            <span>New Lore Book (Tạo Trắng)</span>
           </button>
           <button
             onClick={handleOpenCreate}

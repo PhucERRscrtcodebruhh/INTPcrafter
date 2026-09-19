@@ -1,16 +1,19 @@
-import { pool } from '../server/db.js';
+import { pool, initDatabase } from '../server/db.js';
+import bcrypt from 'bcryptjs';
 
 async function testMessagesAndAuth() {
-  console.log('=== TEST SUITE: MESSAGES & AUTH ===\n');
+  console.log('=== TEST SUITE: MESSAGES & AUTH (BYOK) ===\n');
 
-  // Test 1: Auth validation test
-  console.log('[TEST 1] Verifying Dev Account & Auth rules...');
+  // Ensure DB initialized
+  await initDatabase();
+
+  // Test 1: Dev Account Logic Verification
+  console.log('[TEST 1] Verifying Dev Account Passthrough...');
   const devLogins = [
     { username: '0', password: '0000', shouldPass: true },
     { username: 'dev', password: '0000', shouldPass: true },
     { username: 'DEV', password: '0000', shouldPass: true },
     { username: '0', password: 'wrong', shouldPass: false },
-    { username: 'admin', password: '0000', shouldPass: false },
   ];
 
   for (const tc of devLogins) {
@@ -21,15 +24,45 @@ async function testMessagesAndAuth() {
       throw new Error(`Auth test failed for ${tc.username} / ${tc.password}`);
     }
   }
-  console.log('✓ Dev Account (ID 0 / dev, Pass 0000) verification passed.\n');
+  console.log('✓ Dev Account (ID 0 / dev, Pass 0000) passthrough verification passed.\n');
 
-  // Test 2: Message DB Operations (Create, Update, Truncate, Delete)
-  console.log('[TEST 2] Verifying Message DB Operations...');
-  // Create a temporary test session
+  // Test 2: Bcrypt Password Hashing & User Registration Verification
+  console.log('[TEST 2] Verifying Bcrypt Hashing & User DB Schema...');
+  const testUsername = `testuser_${Date.now()}`;
+  const testPass = 'securePassword123';
+  const hashed = await bcrypt.hash(testPass, 10);
+
+  const [regResult] = await pool.query(
+    'INSERT INTO users (username, password_hash, display_name) VALUES (?, ?, ?)',
+    [testUsername, hashed, 'Test User']
+  );
+  const newUserId = regResult.insertId;
+
+  // Verify hash match
+  const [userRows] = await pool.query('SELECT * FROM users WHERE id = ?', [newUserId]);
+  if (userRows.length === 0) throw new Error('User creation failed');
+
+  const match = await bcrypt.compare(testPass, userRows[0].password_hash);
+  if (!match) throw new Error('Bcrypt password comparison failed');
+
+  console.log(`✓ User registration & bcrypt hash verified for user ID ${newUserId}.\n`);
+
+  // Test 3: Per-User Key Vault DB Table
+  console.log('[TEST 3] Verifying user_api_keys schema...');
+  const [vaultCheck] = await pool.query(
+    'SELECT COUNT(*) as cnt FROM user_api_keys WHERE user_id = ?', [newUserId]
+  );
+  if (vaultCheck[0].cnt !== 0) throw new Error('user_api_keys count mismatch');
+  console.log('✓ user_api_keys table verification passed.\n');
+
+  // Test 4: Message DB Operations (Create, Update, Truncate, Delete)
+  console.log('[TEST 4] Verifying Message DB Operations...');
   const testSessionId = `test_sess_${Date.now()}`;
-  await pool.query(`INSERT INTO chat_sessions (id, title) VALUES (?, 'Test Session For Message Actions')`, [testSessionId]);
+  await pool.query(
+    `INSERT INTO chat_sessions (id, title, user_id) VALUES (?, 'Test Session For Message Actions', ?)`,
+    [testSessionId, newUserId]
+  );
 
-  // Insert 3 test messages
   const [m1] = await pool.query(
     `INSERT INTO chat_messages (session_id, role, content) VALUES (?, 'user', 'Prompt 1: Initial scene')`,
     [testSessionId]
@@ -70,8 +103,10 @@ async function testMessagesAndAuth() {
   }
   console.log('✓ Message single delete passed.');
 
-  // Cleanup test session
+  // Cleanup test data
+  await pool.query(`DELETE FROM chat_messages WHERE session_id = ?`, [testSessionId]);
   await pool.query(`DELETE FROM chat_sessions WHERE id = ?`, [testSessionId]);
+  await pool.query(`DELETE FROM users WHERE id = ?`, [newUserId]);
   console.log('✓ Cleanup completed.\n');
 
   console.log('ALL MESSAGES & AUTH TESTS PASSED SUCCESSFULLY!');

@@ -148,6 +148,54 @@ export async function initDatabase() {
     `);
     console.log('[DB] Table api_keys_vault (SHA-256 secure hash) verified.');
 
+    // 6. users (BYOK auth system)
+    await connection.query(`
+      CREATE TABLE IF NOT EXISTS users (
+        id INT AUTO_INCREMENT PRIMARY KEY,
+        username VARCHAR(50) UNIQUE NOT NULL,
+        password_hash VARCHAR(255) NOT NULL,
+        display_name VARCHAR(100) DEFAULT '',
+        avatar_data LONGTEXT DEFAULT NULL,
+        language VARCHAR(10) DEFAULT 'vi',
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+    `);
+    console.log('[DB] Table users (BYOK auth) verified.');
+
+    // 7. user_api_keys (per-user BYOK key vault)
+    await connection.query(`
+      CREATE TABLE IF NOT EXISTS user_api_keys (
+        id INT AUTO_INCREMENT PRIMARY KEY,
+        user_id INT NOT NULL,
+        key_hash VARCHAR(64) NOT NULL,
+        encrypted_key TEXT NOT NULL,
+        masked_key VARCHAR(32) NOT NULL,
+        status VARCHAR(32) DEFAULT 'active',
+        call_count INT DEFAULT 0,
+        last_used_at BIGINT NULL,
+        rate_limited_until BIGINT NULL,
+        error_msg TEXT NULL,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+        UNIQUE KEY unique_user_key (user_id, key_hash)
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+    `);
+    console.log('[DB] Table user_api_keys (per-user BYOK vault) verified.');
+
+    // 8. Add user_id column to chat_sessions (backward-compat, nullable)
+    try {
+      const [cols] = await connection.query(
+        `SELECT COLUMN_NAME FROM INFORMATION_SCHEMA.COLUMNS 
+         WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'chat_sessions' AND COLUMN_NAME = 'user_id'`
+      );
+      if (cols.length === 0) {
+        await connection.query(`ALTER TABLE chat_sessions ADD COLUMN user_id INT NULL DEFAULT NULL`);
+        console.log('[DB] Added user_id column to chat_sessions.');
+      }
+    } catch (alterErr) {
+      console.warn('[DB] chat_sessions.user_id notice:', alterErr.message);
+    }
+
     // Seed or upgrade master instruction to include <thinking> & LaTeX
     const [instRows] = await connection.query(`SELECT value FROM system_configs WHERE key_name = 'master_system_instruction'`);
     if (instRows.length === 0) {
