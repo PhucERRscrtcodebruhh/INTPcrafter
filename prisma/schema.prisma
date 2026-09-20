@@ -66,3 +66,45 @@ model NodeConnection {
   @@index([worldId], name: "idx_node_conn_world")
   @@map("node_connections")
 }
+
+model ApiKeysVault {
+  id               Int      @id @default(autoincrement())
+  provider         String   @default("gemini") @db.VarChar(32) // gemini, deepseek, openrouter, huggingface
+  baseUrl          String?  @map("base_url") @db.VarChar(255)
+  keyHash          String   @map("key_hash") @db.VarChar(64)
+  encryptedKey     String   @map("encrypted_key") @db.Text
+  maskedKey        String   @map("masked_key") @db.VarChar(32)
+  status           String   @default("active") @db.VarChar(32)
+  callCount        Int      @default(0) @map("call_count")
+  requestCount     Int      @default(0) @map("request_count")
+  rateLimitCount   Int      @default(0) @map("rate_limit_count")
+  lastUsedAt       BigInt?  @map("last_used_at")
+  rateLimitedUntil BigInt?  @map("rate_limited_until")
+  errorMsg         String?  @map("error_msg") @db.Text
+  createdAt        DateTime @default(now()) @map("created_at")
+
+  @@unique([provider, keyHash], name: "unique_provider_key")
+  @@map("api_keys_vault")
+}
+
+model UserApiKey {
+  id               Int      @id @default(autoincrement())
+  userId           Int      @map("user_id")
+  provider         String   @default("gemini") @db.VarChar(32) // gemini, deepseek, openrouter, huggingface
+  baseUrl          String?  @map("base_url") @db.VarChar(255)
+  keyHash          String   @map("key_hash") @db.VarChar(64)
+  encryptedKey     String   @map("encrypted_key") @db.Text
+  maskedKey        String   @map("masked_key") @db.VarChar(32)
+  status           String   @default("active") @db.VarChar(32)
+  callCount        Int      @default(0) @map("call_count")
+  requestCount     Int      @default(0) @map("request_count")
+  rateLimitCount   Int      @default(0) @map("rate_limit_count")
+  lastUsedAt       BigInt?  @map("last_used_at")
+  rateLimitedUntil BigInt?  @map("rate_limited_until")
+  errorMsg         String?  @map("error_msg") @db.Text
+  createdAt        DateTime @default(now()) @map("created_at")
+
+  @@unique([userId, provider, keyHash], name: "unique_user_provider_key")
+  @@map("user_api_keys")
+}
+

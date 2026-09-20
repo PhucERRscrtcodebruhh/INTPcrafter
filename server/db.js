@@ -131,11 +131,13 @@ export async function initDatabase() {
     `);
     console.log('[DB] Table system_configs verified.');
 
-    // 5. api_keys_vault (Google API Key Vault with SHA-256 Hashing & Encryption)
+    // 5. api_keys_vault (Multi-Provider API Key Vault with SHA-256 Hashing & Encryption)
     await connection.query(`
       CREATE TABLE IF NOT EXISTS api_keys_vault (
         id INT AUTO_INCREMENT PRIMARY KEY,
-        key_hash VARCHAR(64) NOT NULL UNIQUE,
+        provider VARCHAR(32) NOT NULL DEFAULT 'gemini',
+        base_url VARCHAR(255) NULL,
+        key_hash VARCHAR(64) NOT NULL,
         encrypted_key TEXT NOT NULL,
         masked_key VARCHAR(32) NOT NULL,
         status VARCHAR(32) DEFAULT 'active',
@@ -145,10 +147,11 @@ export async function initDatabase() {
         last_used_at BIGINT NULL,
         rate_limited_until BIGINT NULL,
         error_msg TEXT NULL,
-        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        UNIQUE KEY unique_provider_key (provider, key_hash)
       ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
     `);
-    console.log('[DB] Table api_keys_vault (SHA-256 secure hash) verified.');
+    console.log('[DB] Table api_keys_vault (Multi-Provider SHA-256 secure hash) verified.');
 
     // Migration check for api_keys_vault columns
     try {
@@ -157,6 +160,14 @@ export async function initDatabase() {
          WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'api_keys_vault'`
       );
       const vaultColNames = vaultCols.map(c => c.COLUMN_NAME);
+      if (!vaultColNames.includes('provider')) {
+        await connection.query(`ALTER TABLE api_keys_vault ADD COLUMN provider VARCHAR(32) NOT NULL DEFAULT 'gemini' AFTER id`);
+        console.log('[DB] Added provider column to api_keys_vault.');
+      }
+      if (!vaultColNames.includes('base_url')) {
+        await connection.query(`ALTER TABLE api_keys_vault ADD COLUMN base_url VARCHAR(255) NULL AFTER provider`);
+        console.log('[DB] Added base_url column to api_keys_vault.');
+      }
       if (!vaultColNames.includes('request_count')) {
         await connection.query(`ALTER TABLE api_keys_vault ADD COLUMN request_count INT DEFAULT 0`);
         console.log('[DB] Added request_count column to api_keys_vault.');
@@ -183,11 +194,13 @@ export async function initDatabase() {
     `);
     console.log('[DB] Table users (BYOK auth) verified.');
 
-    // 7. user_api_keys (per-user BYOK key vault)
+    // 7. user_api_keys (per-user BYOK key vault for Gemini, DeepSeek, OpenRouter, HuggingFace)
     await connection.query(`
       CREATE TABLE IF NOT EXISTS user_api_keys (
         id INT AUTO_INCREMENT PRIMARY KEY,
         user_id INT NOT NULL,
+        provider VARCHAR(32) NOT NULL DEFAULT 'gemini',
+        base_url VARCHAR(255) NULL,
         key_hash VARCHAR(64) NOT NULL,
         encrypted_key TEXT NOT NULL,
         masked_key VARCHAR(32) NOT NULL,
@@ -200,10 +213,10 @@ export async function initDatabase() {
         error_msg TEXT NULL,
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
         FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
-        UNIQUE KEY unique_user_key (user_id, key_hash)
+        UNIQUE KEY unique_user_provider_key (user_id, provider, key_hash)
       ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
     `);
-    console.log('[DB] Table user_api_keys (per-user BYOK vault) verified.');
+    console.log('[DB] Table user_api_keys (per-user multi-provider BYOK vault) verified.');
 
     // Migration check for user_api_keys columns
     try {
@@ -212,6 +225,14 @@ export async function initDatabase() {
          WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'user_api_keys'`
       );
       const userKeyColNames = userKeyCols.map(c => c.COLUMN_NAME);
+      if (!userKeyColNames.includes('provider')) {
+        await connection.query(`ALTER TABLE user_api_keys ADD COLUMN provider VARCHAR(32) NOT NULL DEFAULT 'gemini' AFTER user_id`);
+        console.log('[DB] Added provider column to user_api_keys.');
+      }
+      if (!userKeyColNames.includes('base_url')) {
+        await connection.query(`ALTER TABLE user_api_keys ADD COLUMN base_url VARCHAR(255) NULL AFTER provider`);
+        console.log('[DB] Added base_url column to user_api_keys.');
+      }
       if (!userKeyColNames.includes('request_count')) {
         await connection.query(`ALTER TABLE user_api_keys ADD COLUMN request_count INT DEFAULT 0`);
         console.log('[DB] Added request_count column to user_api_keys.');

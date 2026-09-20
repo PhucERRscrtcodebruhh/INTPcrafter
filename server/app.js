@@ -3,6 +3,15 @@ import cors from 'cors';
 import dotenv from 'dotenv';
 import { pool } from './db.js';
 import { keyPool, getPoolForUser, addUserKey, removeUserKey, getUserKeyStatus, resetUserKeys } from './geminiPool.js';
+import { 
+  dispatchStreamingGeneration, 
+  testProviderKey, 
+  getUserMultiProviderKeys, 
+  addUserMultiProviderKey, 
+  removeUserMultiProviderKey, 
+  resetUserMultiProviderStatuses,
+  detectProviderFromModel 
+} from './llmProviders.js';
 import { RAGEngine } from './ragEngine.js';
 import {
   getModelContextLimit,
@@ -326,13 +335,24 @@ app.post('/api/chat', optionalAuth, async (req, res) => {
       parts: [{ text: cleanPrompt }]
     });
 
+    const messages = prunedMessages.map(m => ({
+      role: m.role === 'user' ? 'user' : 'assistant',
+      content: m.content
+    }));
+    messages.push({
+      role: 'user',
+      content: cleanPrompt
+    });
+
     await pool.query(
       `INSERT INTO chat_messages (session_id, role, content, retrieved_lore_ids) VALUES (?, 'user', ?, ?)`,
       [sessionId, cleanPrompt, retrievedLoreIds]
     );
 
-    const result = await userKeyPool.executeWithFallback({
-      model,
+    const result = await dispatchStreamingGeneration({
+      userId,
+      requestedModel: model,
+      messages,
       contents,
       systemInstruction: fullSystemInstruction,
       generationConfig: {
@@ -384,7 +404,7 @@ app.post('/api/chat', optionalAuth, async (req, res) => {
   }
 });
 
-// SSE Streaming Generation Endpoint (BYOK per-user)
+// SSE Streaming Generation Endpoint (Multi-Provider BYOK per-user)
 app.post('/api/chat/stream', optionalAuth, async (req, res) => {
   const {
     sessionId,
@@ -402,19 +422,6 @@ app.post('/api/chat/stream', optionalAuth, async (req, res) => {
 
   const cleanPrompt = prompt.trim();
   const userId = req.user?.id || 0;
-
-  // Load per-user key pool (BYOK)
-  let userKeyPool;
-  try {
-    userKeyPool = await getPoolForUser(userId);
-    if (userKeyPool.keys.length === 0) {
-      return res.status(400).json({
-        error: 'NO_API_KEYS: Bạn chưa thêm Gemini API Key. Vào World Config & Lorebook → Key Pool để thêm key (BYOK).'
-      });
-    }
-  } catch (poolErr) {
-    return res.status(500).json({ error: 'Failed to load key pool: ' + poolErr.message });
-  }
 
   res.setHeader('Content-Type', 'text/event-stream');
   res.setHeader('Cache-Control', 'no-cache');
@@ -478,6 +485,15 @@ app.post('/api/chat/stream', optionalAuth, async (req, res) => {
       parts: [{ text: cleanPrompt }]
     });
 
+    const messages = prunedMessages.map(m => ({
+      role: m.role === 'user' ? 'user' : 'assistant',
+      content: m.content
+    }));
+    messages.push({
+      role: 'user',
+      content: cleanPrompt
+    });
+
     await pool.query(
       `INSERT INTO chat_messages (session_id, role, content, retrieved_lore_ids) VALUES (?, 'user', ?, ?)`,
       [sessionId, cleanPrompt, retrievedLoreIds]
@@ -485,8 +501,10 @@ app.post('/api/chat/stream', optionalAuth, async (req, res) => {
 
     res.write(`event: rag\ndata: ${JSON.stringify({ retrievedLore, retrievedLoreIds })}\n\n`);
 
-    const result = await userKeyPool.executeStreamWithFallback({
-      model,
+    const result = await dispatchStreamingGeneration({
+      userId,
+      requestedModel: model,
+      messages,
       contents,
       systemInstruction: fullSystemInstruction,
       generationConfig: {
@@ -936,36 +954,28 @@ app.post('/api/graph/:worldId', async (req, res) => {
 });
 
 // ==========================================
-// API KEY POOL & CONFIG (per-user BYOK)
+// API KEY POOL & CONFIG (Multi-Provider BYOK)
 // ==========================================
 
-// Get user's keys
+// Get user's keys (filtered optionally by ?provider=gemini|deepseek|openrouter|huggingface)
 app.get('/api/keys', optionalAuth, async (req, res) => {
   try {
     const userId = req.user?.id || 0;
-    const status = await getUserKeyStatus(userId);
+    const provider = req.query.provider || null;
+    const status = await getUserMultiProviderKeys(userId, provider);
     res.json(status);
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
 });
 
-// Add a key for user (BYOK)
+// Add a key for user (Multi-Provider BYOK)
 app.post('/api/keys', optionalAuth, async (req, res) => {
   try {
     const userId = req.user?.id || 0;
-    const { key, keys } = req.body;
+    const { key, keys, provider = 'gemini', baseUrl } = req.body;
 
-    if (userId === 0) {
-      // Dev account: use legacy global pool
-      if (!Array.isArray(keys)) {
-        return res.status(400).json({ error: 'Dev account: keys must be an array of strings' });
-      }
-      const updatedStatus = await keyPool.saveKeysToDB(keys);
-      return res.json({ success: true, keys: updatedStatus });
-    }
-
-    // Registered user: support single key or batch of keys
+    // Support batch of keys
     if (Array.isArray(keys) && keys.length > 0) {
       const validKeys = keys.map(k => String(k).trim()).filter(Boolean);
       if (validKeys.length === 0) {
@@ -973,9 +983,9 @@ app.post('/api/keys', optionalAuth, async (req, res) => {
       }
       let finalStatus = null;
       for (const k of validKeys) {
-        finalStatus = await addUserKey(userId, k);
+        finalStatus = await addUserMultiProviderKey(userId, k, provider, baseUrl);
       }
-      return res.json({ success: true, keys: finalStatus || await getUserKeyStatus(userId) });
+      return res.json({ success: true, keys: finalStatus || await getUserMultiProviderKeys(userId, provider) });
     }
 
     const rawKey = key;
@@ -983,7 +993,7 @@ app.post('/api/keys', optionalAuth, async (req, res) => {
       return res.status(400).json({ error: 'API key is required.' });
     }
 
-    const updatedStatus = await addUserKey(userId, String(rawKey).trim());
+    const updatedStatus = await addUserMultiProviderKey(userId, String(rawKey).trim(), provider, baseUrl);
     res.json({ success: true, keys: updatedStatus });
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -994,33 +1004,31 @@ app.post('/api/keys', optionalAuth, async (req, res) => {
 app.delete('/api/keys/:keyId', optionalAuth, async (req, res) => {
   try {
     const userId = req.user?.id || 0;
-    if (userId === 0) {
-      return res.status(403).json({ error: 'Dev account cannot remove individual keys.' });
-    }
-    const updatedStatus = await removeUserKey(userId, parseInt(req.params.keyId, 10));
+    const updatedStatus = await removeUserMultiProviderKey(userId, parseInt(req.params.keyId, 10));
     res.json({ success: true, keys: updatedStatus });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
 });
 
-// Test a single key (no auth needed)
+// Test a single key for any provider (no auth needed)
 app.post('/api/keys/test', async (req, res) => {
   try {
-    const { key } = req.body;
+    const { key, provider = 'gemini', baseUrl } = req.body;
     if (!key) return res.status(400).json({ error: 'Key is required' });
-    const result = await keyPool.testSingleKey(key);
+    const result = await testProviderKey({ provider, key, baseUrl });
     res.json(result);
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
 });
 
-// Reset user's key statuses
+// Reset user's key statuses (optionally per provider)
 app.post('/api/keys/reset', optionalAuth, async (req, res) => {
   try {
     const userId = req.user?.id || 0;
-    const updatedStatus = await resetUserKeys(userId);
+    const provider = req.body.provider || req.query.provider || null;
+    const updatedStatus = await resetUserMultiProviderStatuses(userId, provider);
     res.json({ success: true, keys: updatedStatus });
   } catch (err) {
     res.status(500).json({ error: err.message });

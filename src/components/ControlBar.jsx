@@ -128,39 +128,77 @@ export default function ControlBar({
               <select
                 value={model}
                 onChange={(e) => setModel(e.target.value)}
-                className="bg-transparent text-slate-200 text-xs font-medium focus:outline-none cursor-pointer"
+                className="bg-transparent text-slate-200 text-xs font-medium focus:outline-none cursor-pointer max-w-[200px] sm:max-w-none"
               >
-                <optgroup label="Gemini 3.x Flagship">
-                  <option value="gemini-3.8-flash" className="bg-cyber-900 text-slate-200">
-                    gemini-3.8-flash (1M Agentic SOTA)
+                <optgroup label="🟣 DeepSeek Flagship Series">
+                  <option value="deepseek-v4-pro" className="bg-cyber-900 text-purple-300">
+                    DeepSeek-V4-Pro (Supreme Novel Prose)
                   </option>
-                  <option value="gemini-3.7-flash" className="bg-cyber-900 text-slate-200">
-                    gemini-3.7-flash (1M High Speed)
+                  <option value="deepseek-v4-flash" className="bg-cyber-900 text-purple-300">
+                    DeepSeek-V4-Flash (Ultra-Fast Stream)
                   </option>
-                  <option value="gemini-3.6-flash" className="bg-cyber-900 text-slate-200">
-                    gemini-3.6-flash (1M Fast & Balanced)
+                  <option value="deepseek-v3.2" className="bg-cyber-900 text-purple-300">
+                    DeepSeek-V3.2 (Balanced Narrative)
                   </option>
-                  <option value="gemini-3.5-flash-lite" className="bg-cyber-900 text-slate-200">
-                    gemini-3.5-flash-lite (1M Ultra-Fast)
+                  <option value="deepseek-r1" className="bg-cyber-900 text-purple-300">
+                    DeepSeek-R1 (Reasoning & Chain-of-Thought)
                   </option>
-                  <option value="gemini-3.1-pro" className="bg-cyber-900 text-slate-200">
-                    gemini-3.1-pro (1M Deep Reasoning)
+                  <option value="deepseek-r1-zero" className="bg-cyber-900 text-purple-300">
+                    DeepSeek-R1-Zero (Pure RL Thinking)
                   </option>
-                </optgroup>
-                <optgroup label="Gemini 2.5 Series">
-                  <option value="gemini-2.5-pro" className="bg-cyber-900 text-slate-200">
-                    gemini-2.5-pro (2M Long Context)
-                  </option>
-                  <option value="gemini-2.5-flash" className="bg-cyber-900 text-slate-200">
-                    gemini-2.5-flash (1M High Precision)
+                  <option value="deepseek-r1-0528" className="bg-cyber-900 text-purple-300">
+                    DeepSeek-R1-0528 (Deterministic Checkpoint)
                   </option>
                 </optgroup>
-                <optgroup label="Gemma 4 Open Weights">
-                  <option value="gemma-4-31b-it" className="bg-cyber-900 text-slate-200">
-                    gemma-4-31b-it (128K Dense Nuance)
+
+                <optgroup label="🟣 DeepSeek Specialized AI">
+                  <option value="deepseek-coder-v2" className="bg-cyber-900 text-purple-300">
+                    DeepSeek-Coder-V2 (Code, Infilling & Algorithms)
                   </option>
-                  <option value="gemma-4-26b-a4b-it" className="bg-cyber-900 text-slate-200">
-                    gemma-4-26b-a4b-it (128K MoE Speed)
+                  <option value="deepseek-math-v2" className="bg-cyber-900 text-purple-300">
+                    DeepSeekMath-V2 (Toán & Chứng minh Tự nhiên)
+                  </option>
+                  <option value="deepseek-prover-v2" className="bg-cyber-900 text-purple-300">
+                    DeepSeek-Prover-V2 (Chứng minh Lean 4)
+                  </option>
+                </optgroup>
+
+                <optgroup label="🔷 Google Gemini Flagship">
+                  <option value="gemini-3.8-flash" className="bg-cyber-900 text-cyan-300">
+                    Gemini 3.8 Flash (1M Agentic SOTA)
+                  </option>
+                  <option value="gemini-3.7-flash" className="bg-cyber-900 text-cyan-300">
+                    Gemini 3.7 Flash (1M High Speed)
+                  </option>
+                  <option value="gemini-3.6-flash" className="bg-cyber-900 text-cyan-300">
+                    Gemini 3.6 Flash (1M Fast & Balanced)
+                  </option>
+                  <option value="gemini-3.5-flash-lite" className="bg-cyber-900 text-cyan-300">
+                    Gemini 3.5 Flash-Lite (1M Ultra-Fast)
+                  </option>
+                  <option value="gemini-3.1-pro" className="bg-cyber-900 text-cyan-300">
+                    Gemini 3.1 Pro (1M Deep Reasoning)
+                  </option>
+                  <option value="gemini-2.5-pro" className="bg-cyber-900 text-cyan-300">
+                    Gemini 2.5 Pro (2M Long Context)
+                  </option>
+                  <option value="gemini-2.5-flash" className="bg-cyber-900 text-cyan-300">
+                    Gemini 2.5 Flash (1M Precision)
+                  </option>
+                  <option value="gemma-4-31b-it" className="bg-cyber-900 text-cyan-300">
+                    Gemma 4 31B IT (128K Dense Open)
+                  </option>
+                </optgroup>
+
+                <optgroup label="🌐 OpenRouter & HuggingFace">
+                  <option value="openrouter/auto" className="bg-cyber-900 text-blue-300">
+                    OpenRouter Auto (Best Open Weights)
+                  </option>
+                  <option value="meta-llama/llama-3.3-70b-instruct" className="bg-cyber-900 text-blue-300">
+                    Llama 3.3 70B Instruct (Meta Open)
+                  </option>
+                  <option value="huggingface/deepseek-ai/DeepSeek-R1" className="bg-cyber-900 text-amber-300">
+                    DeepSeek-R1 (Hugging Face Serverless)
                   </option>
                 </optgroup>
               </select>

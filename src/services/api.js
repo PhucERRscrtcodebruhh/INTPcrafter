@@ -206,22 +206,26 @@ export const api = {
     body: JSON.stringify(graphData),
   }),
 
-  // API Key Pool
-  getKeys: () => request('/keys'),
-  updateKeys: (keys) => request('/keys', {
+  // API Key Pool (Multi-Provider: gemini, deepseek, openrouter, huggingface)
+  getKeys: (provider = null) => {
+    const query = provider ? `?provider=${encodeURIComponent(provider)}` : '';
+    return request(`/keys${query}`);
+  },
+  updateKeys: (keys, provider = 'gemini', baseUrl = null) => request('/keys', {
     method: 'POST',
-    body: JSON.stringify({ keys }),
+    body: JSON.stringify({ keys, provider, baseUrl }),
   }),
-  testKey: (key) => request('/keys/test', {
+  testKey: (key, provider = 'gemini', baseUrl = null) => request('/keys/test', {
     method: 'POST',
-    body: JSON.stringify({ key }),
+    body: JSON.stringify({ key, provider, baseUrl }),
   }),
-  resetKeys: () => request('/keys/reset', {
+  resetKeys: (provider = null) => request('/keys/reset', {
     method: 'POST',
+    body: JSON.stringify({ provider }),
   }),
-  addKey: (key) => request('/keys', { 
+  addKey: (key, provider = 'gemini', baseUrl = null) => request('/keys', { 
     method: 'POST', 
-    body: JSON.stringify({ key }) 
+    body: JSON.stringify({ key, provider, baseUrl }) 
   }),
   removeKey: (keyId) => request('/keys/' + keyId, { 
     method: 'DELETE' 

@@ -1,20 +1,20 @@
 import { api } from './api';
 
 export const GeminiPoolService = {
-  async getKeysStatus() {
-    return await api.getKeys();
+  async getKeysStatus(provider = null) {
+    return await api.getKeys(provider);
   },
 
-  async saveKeys(keys) {
-    return await api.updateKeys(keys);
+  async saveKeys(keys, provider = 'gemini', baseUrl = null) {
+    return await api.updateKeys(keys, provider, baseUrl);
   },
 
-  async testKey(key) {
-    return await api.testKey(key);
+  async testKey(key, provider = 'gemini', baseUrl = null) {
+    return await api.testKey(key, provider, baseUrl);
   },
 
-  async resetPool() {
-    return await api.resetKeys();
+  async resetPool(provider = null) {
+    return await api.resetKeys(provider);
   },
 
   formatKeyStatus(status) {
@@ -30,3 +30,5 @@ export const GeminiPoolService = {
     }
   }
 };
+
+export const MultiProviderService = GeminiPoolService;

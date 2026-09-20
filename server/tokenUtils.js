@@ -1,4 +1,5 @@
 export const MODEL_CONTEXT_LIMITS = {
+  // Gemini Flagship Series
   'gemini-3.8-flash': 1048576,
   'gemini-3.7-flash': 1048576,
   'gemini-3.6-flash': 1048576,
@@ -8,6 +9,28 @@ export const MODEL_CONTEXT_LIMITS = {
   'gemini-2.5-flash': 1048576,
   'gemma-4-31b-it': 131072,
   'gemma-4-26b-a4b-it': 131072,
+
+  // DeepSeek Flagship Series (128K context window)
+  'deepseek-v4-pro': 131072,
+  'deepseek-v4-flash': 131072,
+  'deepseek-v3.2': 131072,
+  'deepseek-chat': 131072,
+  'deepseek-r1-zero': 131072,
+  'deepseek-r1-0528': 131072,
+  'deepseek-r1': 131072,
+  'deepseek-reasoner': 131072,
+  'deepseek-reasoning': 131072,
+  'deepseek-coder-v2': 131072,
+  'deepseek-coder': 131072,
+  'deepseek-math-v2': 131072,
+  'deepseek-prover-v2': 131072,
+
+  // OpenRouter & HuggingFace
+  'openrouter/auto': 131072,
+  'meta-llama/llama-3.3-70b-instruct': 131072,
+  'mistralai/mistral-large': 131072,
+  'huggingface/deepseek-ai/DeepSeek-R1': 131072,
+
   'default': 1048576
 };
 
