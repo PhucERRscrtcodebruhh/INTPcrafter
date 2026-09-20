@@ -60,7 +60,7 @@ app.get('/api/sessions', optionalAuth, async (req, res) => {
     if (userId > 0) {
       // Registered user: show only their sessions
       [sessions] = await pool.query(
-        `SELECT s.id, s.title, s.user_id, s.book_id, s.rolling_threshold, b.title as book_title, s.created_at, 
+        `SELECT s.id, s.title, s.user_id, s.book_id, COALESCE(s.rolling_threshold, 32768) as rolling_threshold, b.title as book_title, s.created_at, 
                 COUNT(m.id) as message_count,
                 MAX(m.created_at) as last_message_at
          FROM chat_sessions s
@@ -74,7 +74,7 @@ app.get('/api/sessions', optionalAuth, async (req, res) => {
     } else {
       // Dev/anonymous: show sessions with NULL or 0 user_id
       [sessions] = await pool.query(
-        `SELECT s.id, s.title, s.user_id, s.book_id, s.rolling_threshold, b.title as book_title, s.created_at, 
+        `SELECT s.id, s.title, s.user_id, s.book_id, COALESCE(s.rolling_threshold, 32768) as rolling_threshold, b.title as book_title, s.created_at, 
                 COUNT(m.id) as message_count,
                 MAX(m.created_at) as last_message_at
          FROM chat_sessions s
@@ -143,7 +143,7 @@ app.put('/api/sessions/:id', optionalAuth, async (req, res) => {
     
     // Fetch updated session
     const [rows] = await pool.query(
-      `SELECT s.id, s.title, s.user_id, s.book_id, s.rolling_threshold, b.title as book_title, s.created_at
+      `SELECT s.id, s.title, s.user_id, s.book_id, COALESCE(s.rolling_threshold, 32768) as rolling_threshold, b.title as book_title, s.created_at
        FROM chat_sessions s
        LEFT JOIN lore_books b ON s.book_id = b.id
        WHERE s.id = ?`,
@@ -289,7 +289,7 @@ app.post('/api/chat', optionalAuth, async (req, res) => {
     }
 
     const [sessRows] = await pool.query(
-      `SELECT s.book_id, s.rolling_threshold, b.title as book_title, b.system_instruction as book_instruction
+      `SELECT s.book_id, COALESCE(s.rolling_threshold, 32768) as rolling_threshold, b.title as book_title, b.system_instruction as book_instruction
        FROM chat_sessions s
        LEFT JOIN lore_books b ON s.book_id = b.id
        WHERE s.id = ?`,
@@ -442,7 +442,7 @@ app.post('/api/chat/stream', optionalAuth, async (req, res) => {
 
   try {
     const [sessRows] = await pool.query(
-      `SELECT s.book_id, s.rolling_threshold, b.title as book_title, b.system_instruction as book_instruction
+      `SELECT s.book_id, COALESCE(s.rolling_threshold, 32768) as rolling_threshold, b.title as book_title, b.system_instruction as book_instruction
        FROM chat_sessions s
        LEFT JOIN lore_books b ON s.book_id = b.id
        WHERE s.id = ?`,

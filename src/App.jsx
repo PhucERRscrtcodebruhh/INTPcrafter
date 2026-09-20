@@ -160,12 +160,27 @@ export default function App() {
     loadKeyPoolTelemetry();
   }, [currentUser?.id]);
 
+  const pendingSaveRef = useRef(null);
+
+  const flushPendingRollingThresholdSave = async () => {
+    if (pendingSaveRef.current) {
+      const { sessionId, val } = pendingSaveRef.current;
+      pendingSaveRef.current = null;
+      if (rollingDebounceRef.current) {
+        clearTimeout(rollingDebounceRef.current);
+        rollingDebounceRef.current = null;
+      }
+      try {
+        await api.updateSession(sessionId, { rolling_threshold: val });
+      } catch (err) {
+        console.warn('Failed to flush session rolling_threshold save:', err);
+      }
+    }
+  };
+
   // Synchronize session-specific rollingThreshold whenever active session changes
   useEffect(() => {
     if (activeSessionId) {
-      if (rollingDebounceRef.current) {
-        clearTimeout(rollingDebounceRef.current);
-      }
       const session = sessions.find(s => s.id === activeSessionId);
       const cached = localStorage.getItem('storycontainer_rolling_' + activeSessionId);
       const sessionThresh = session?.rolling_threshold || session?.rollingThreshold || (cached ? parseInt(cached, 10) : 32768);
@@ -173,29 +188,37 @@ export default function App() {
     }
   }, [activeSessionId, sessions]);
 
+  // Handler for session selection with immediate save flush of previous session
+  const handleSelectSession = (id) => {
+    if (id === activeSessionId) return;
+    flushPendingRollingThresholdSave();
+    setActiveSessionId(id);
+  };
+
   // Debounced updater for rolling threshold per session
-  const handleUpdateRollingThreshold = (newVal) => {
+  const handleUpdateRollingThreshold = (newVal, immediate = false) => {
     const val = parseInt(newVal, 10) || 32768;
     setRollingThreshold(val);
 
     if (activeSessionId) {
-      // 1. Immediately cache in localStorage for instant offline access
+      // 1. Immediately cache in localStorage for instant offline access & persistence
       localStorage.setItem('storycontainer_rolling_' + activeSessionId, val);
 
       // 2. Immediately update in sessions state
       setSessions(prev => prev.map(s => s.id === activeSessionId ? { ...s, rolling_threshold: val } : s));
+      pendingSaveRef.current = { sessionId: activeSessionId, val };
 
-      // 3. Debounce DB update by 300ms
       if (rollingDebounceRef.current) {
         clearTimeout(rollingDebounceRef.current);
       }
-      rollingDebounceRef.current = setTimeout(async () => {
-        try {
-          await api.updateSession(activeSessionId, { rolling_threshold: val });
-        } catch (err) {
-          console.warn('Failed to persist session rolling_threshold to server:', err);
-        }
-      }, 300);
+
+      if (immediate) {
+        flushPendingRollingThresholdSave();
+      } else {
+        rollingDebounceRef.current = setTimeout(() => {
+          flushPendingRollingThresholdSave();
+        }, 300);
+      }
     }
   };
 
@@ -609,7 +632,7 @@ export default function App() {
           <ChatCanvas
             sessions={sessions}
             activeSessionId={activeSessionId}
-            onSelectSession={(id) => setActiveSessionId(id)}
+            onSelectSession={handleSelectSession}
             onCreateSession={handleCreateSession}
             onRenameSession={handleRenameSession}
             onDeleteSession={handleDeleteSession}

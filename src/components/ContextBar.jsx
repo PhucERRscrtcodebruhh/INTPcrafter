@@ -210,7 +210,7 @@ export default function ContextBar({
             {presets.map(p => (
               <button
                 key={p.value}
-                onClick={() => onUpdateRollingThreshold(p.value)}
+                onClick={() => onUpdateRollingThreshold(p.value, true)}
                 className={`px-2.5 py-1 rounded text-xs border transition-all ${
                   rollingThreshold === p.value
                     ? 'bg-cyan-500/25 border-cyan-400 text-cyan-300 shadow-glow-cyan-sm font-semibold'
@@ -236,7 +236,7 @@ export default function ContextBar({
               max={Math.min(limit, 524288)}
               step="4096"
               value={rollingThreshold}
-              onChange={(e) => onUpdateRollingThreshold(parseInt(e.target.value, 10))}
+              onChange={(e) => onUpdateRollingThreshold(parseInt(e.target.value, 10), false)}
               className="w-full h-1.5 bg-cyber-900 rounded-lg appearance-none cursor-pointer accent-cyan-400"
             />
           </div>
