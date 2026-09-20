@@ -29,7 +29,8 @@ import {
   Minimize2,
   Menu,
   X,
-  ChevronDown
+  ChevronDown,
+  FolderInput
 } from 'lucide-react';
 
 import { CharacterNode } from './nodes/CharacterNode';
@@ -39,6 +40,7 @@ import { EventNode } from './nodes/EventNode';
 import { RelationshipEdge } from './edges/RelationshipEdge';
 import NodeInspector from './NodeInspector';
 import GraphRagExportModal from './GraphRagExportModal';
+import ImportLoreModal from './ImportLoreModal';
 import { api } from '../../services/api';
 
 // Node and Edge Types Mapping for React Flow
@@ -214,6 +216,9 @@ export default function WorldGraphCanvas({
   // RAG Exporter Modal
   const [isExportModalOpen, setIsExportModalOpen] = useState(false);
 
+  // Import Lorebook Modal
+  const [isImportModalOpen, setIsImportModalOpen] = useState(false);
+
   // Mobile FAB node add menu
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
 
@@ -362,6 +367,137 @@ export default function WorldGraphCanvas({
     setMobileMenuOpen(false);
   };
 
+  // Import lorebook entries directly into Canvas as polymorphic nodes
+  const handleImportLoreNodes = useCallback((selectedEntries = [], autoLayoutGrid = true) => {
+    if (!selectedEntries || selectedEntries.length === 0) return;
+
+    let baseX = 100;
+    let baseY = 100;
+
+    if (nodes.length > 0) {
+      const maxX = Math.max(...nodes.map(n => (n.position?.x || 0) + 360));
+      const minY = Math.min(...nodes.map(n => n.position?.y || 100));
+      baseX = Math.max(100, maxX + 80);
+      baseY = Math.max(100, minY);
+    }
+
+    const COLS = 3;
+    const COL_WIDTH = 380;
+    const ROW_HEIGHT = 320;
+
+    const newNodes = selectedEntries.map((entry, idx) => {
+      const nodeId = `lore_${entry.id}_${Date.now()}_${idx}`;
+      
+      let x = baseX + (idx % COLS) * COL_WIDTH;
+      let y = baseY + Math.floor(idx / COLS) * ROW_HEIGHT;
+
+      if (!autoLayoutGrid) {
+        x = baseX + Math.floor(Math.random() * 200);
+        y = baseY + Math.floor(Math.random() * 200);
+      }
+
+      const cat = entry.category || 'General';
+      const meta = typeof entry.metadata === 'object' && entry.metadata !== null ? entry.metadata : {};
+      const canonical = entry.canonicalLore || entry.content || '';
+      const rules = entry.rules || '';
+
+      let nodeType = 'system';
+      let nodeData = {};
+
+      if (cat === 'Character') {
+        nodeType = 'character';
+        nodeData = {
+          loreEntryId: entry.id,
+          name: entry.title || 'Untitled Character',
+          aliases: typeof entry.aliases === 'string' ? entry.aliases : JSON.stringify(entry.aliases || ''),
+          role: meta.role || 'Character',
+          currentRealm: meta.realmOrLevel || 'Mortal Stage 1',
+          abilities: Array.isArray(meta.abilities) ? meta.abilities : (meta.abilities ? [meta.abilities] : (meta.equipmentOrItems ? [meta.equipmentOrItems] : ['Lore Invariant'])),
+          personality: meta.personalityTraits || canonical || 'Lore-defined persona.',
+          statusProgression: Array.isArray(meta.statusProgression) && meta.statusProgression.length > 0 
+            ? meta.statusProgression 
+            : [
+                { 
+                  id: `prog_${entry.id}_1`, 
+                  version: '1', 
+                  realmOrLevel: meta.realmOrLevel || 'Mortal Stage 1', 
+                  description: canonical || 'Base state' 
+                }
+              ],
+          notes: rules || ''
+        };
+      } else if (cat === 'MagicSystem') {
+        nodeType = 'system';
+        nodeData = {
+          loreEntryId: entry.id,
+          systemName: entry.title || 'Magic / Science System',
+          type: meta.type || 'Magic',
+          resourceCost: meta.resourceCost || 'Stamina / Mana toll',
+          formulaOrEquation: meta.formulaOrEquation || '',
+          rulesAndConstraints: rules 
+            ? [rules] 
+            : (Array.isArray(meta.rulesAndConstraints) && meta.rulesAndConstraints.length > 0 
+                ? meta.rulesAndConstraints 
+                : ['RULE 1: Deterministic world constraints apply.']),
+          unlocks: meta.unlockConditions ? [meta.unlockConditions] : ['Basic Application']
+        };
+      } else if (cat === 'Location') {
+        nodeType = 'location';
+        nodeData = {
+          loreEntryId: entry.id,
+          name: entry.title || 'Sector / Location',
+          environment: meta.environmentType || canonical || 'Frontier Labyrinth',
+          controllingFaction: meta.controllingFaction || 'Independent',
+          resources: meta.hazardsOrResources ? [meta.hazardsOrResources] : ['Ambient Resource'],
+          hazards: rules || ''
+        };
+      } else if (cat === 'Event') {
+        nodeType = 'event';
+        nodeData = {
+          loreEntryId: entry.id,
+          eventTitle: entry.title || 'Historical Event',
+          timestampOrEpoch: meta.timeAnchor || 'Epoch 1',
+          participants: Array.isArray(meta.participants) ? meta.participants : (meta.participants ? [meta.participants] : ['Major Factions']),
+          outcome: meta.outcome || canonical || 'Event resolved.',
+          consequences: meta.consequences || rules || ''
+        };
+      } else {
+        // General / Other
+        nodeType = 'system';
+        nodeData = {
+          loreEntryId: entry.id,
+          systemName: entry.title || 'General Lore Note',
+          type: 'General',
+          resourceCost: 'N/A',
+          rulesAndConstraints: rules ? [rules] : [canonical || 'General canon rule.'],
+          unlocks: []
+        };
+      }
+
+      return {
+        id: nodeId,
+        type: nodeType,
+        position: { x, y },
+        data: nodeData
+      };
+    });
+
+    setNodes(nds => {
+      const updated = [...nds, ...newNodes];
+      if (activeBookId) {
+        api.saveGraphState(activeBookId, { nodes: updated, edges }).catch(err => {
+          console.warn('[Graph] Save on import error:', err.message);
+        });
+      }
+      return updated;
+    });
+
+    if (newNodes.length > 0) {
+      setSelectedNodeId(newNodes[0].id);
+      setSelectedEdgeId(null);
+    }
+  }, [nodes, edges, activeBookId, setNodes]);
+
   // Update Node Data
   const handleUpdateNodeData = useCallback((nodeId, newData) => {
     setNodes((nds) =>
@@ -455,6 +591,17 @@ export default function WorldGraphCanvas({
             >
               <Clock size={12} />
               <span>+ Event</span>
+            </button>
+
+            <div className="h-4 w-px bg-slate-700 hidden lg:block" />
+
+            <button
+              onClick={() => setIsImportModalOpen(true)}
+              className="px-2.5 py-1 rounded bg-blue-950/90 border border-blue-500/50 text-blue-300 hover:bg-blue-900 hover:border-blue-400 text-xs font-mono flex items-center space-x-1.5 transition-all shadow-glow-cyan-sm font-semibold"
+              title="Import Lorebook Entries from database directly into Canvas"
+            >
+              <FolderInput size={13} className="text-blue-400" />
+              <span>📥 Import Lorebook Entries</span>
             </button>
           </div>
         </div>
@@ -585,6 +732,16 @@ export default function WorldGraphCanvas({
                   <Clock size={14} />
                   <span>+ Event Node</span>
                 </button>
+                <button
+                  onClick={() => {
+                    setMobileMenuOpen(false);
+                    setIsImportModalOpen(true);
+                  }}
+                  className="w-full min-h-[44px] px-3 rounded bg-blue-950/90 border border-blue-500/50 text-blue-300 text-xs font-mono flex items-center space-x-2 font-bold"
+                >
+                  <FolderInput size={14} className="text-blue-400" />
+                  <span>📥 Import Lorebook</span>
+                </button>
               </div>
             )}
 
@@ -622,6 +779,15 @@ export default function WorldGraphCanvas({
         nodes={nodes}
         edges={edges}
         initialSelectedNodeId={selectedNodeId || (nodes.length > 0 ? nodes[0].id : null)}
+      />
+
+      {/* Import Lorebook Entries to Canvas Modal */}
+      <ImportLoreModal
+        isOpen={isImportModalOpen}
+        onClose={() => setIsImportModalOpen(false)}
+        activeBookId={activeBookId}
+        existingNodes={nodes}
+        onImportNodes={handleImportLoreNodes}
       />
     </div>
   );
