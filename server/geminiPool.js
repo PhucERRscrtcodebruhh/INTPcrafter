@@ -40,10 +40,11 @@ export function decryptKey(payload, secret = CRYPTO_SECRET) {
   }
 }
 
-class GeminiKeyPool {
-  constructor() {
-    this.keys = []; // Array of { id, key, hash, masked, status, callCount, lastUsed, rateLimitedUntil, errorMsg }
-    this.currentIndex = 0;
+export class GeminiKeyPool {
+  constructor(userId = 0) {
+    this.userId = userId;
+    this.keys = []; // Array of { id, key, hash, masked, status, callCount, requestCount, rateLimitCount, lastUsed, rateLimitedUntil, errorMsg }
+    this.currentIndex = -1;
     this.initialized = false;
   }
 
@@ -52,7 +53,7 @@ class GeminiKeyPool {
     try {
       // 1. Try loading from secure api_keys_vault table
       let [vaultRows] = await pool.query(
-        `SELECT id, key_hash, encrypted_key, masked_key, status, call_count, last_used_at, rate_limited_until, error_msg 
+        `SELECT id, key_hash, encrypted_key, masked_key, status, call_count, request_count, rate_limit_count, last_used_at, rate_limited_until, error_msg 
          FROM api_keys_vault ORDER BY id ASC`
       );
 
@@ -69,6 +70,8 @@ class GeminiKeyPool {
             masked: row.masked_key || this.maskKey(rawKey),
             status: row.status || 'active',
             callCount: row.call_count || 0,
+            requestCount: row.request_count || 0,
+            rateLimitCount: row.rate_limit_count || 0,
             lastUsed: row.last_used_at || null,
             rateLimitedUntil: row.rate_limited_until || null,
             errorMsg: row.error_msg || ''
@@ -119,12 +122,14 @@ class GeminiKeyPool {
         masked: this.maskKey(cleanKey),
         status: existing ? existing.status : 'active',
         callCount: existing ? existing.callCount : 0,
+        requestCount: existing ? existing.requestCount : 0,
+        rateLimitCount: existing ? existing.rateLimitCount : 0,
         lastUsed: existing ? existing.lastUsed : null,
         rateLimitedUntil: existing ? existing.rateLimitedUntil : null,
         errorMsg: existing ? existing.errorMsg : ''
       };
     });
-    this.currentIndex = 0;
+    this.currentIndex = -1;
   }
 
   maskKey(key) {
@@ -176,13 +181,57 @@ class GeminiKeyPool {
         hash: k.hash ? k.hash.substring(0, 16) + '...' : '',
         masked: k.masked,
         status: effectiveStatus,
-        callCount: k.callCount,
+        callCount: k.callCount || 0,
+        requestCount: k.requestCount || 0,
+        rateLimitCount: k.rateLimitCount || 0,
         lastUsed: k.lastUsed,
         rateLimitedUntil: k.rateLimitedUntil,
         cooldownSecondsRemaining: k.rateLimitedUntil && k.rateLimitedUntil > now ? Math.ceil((k.rateLimitedUntil - now) / 1000) : 0,
         errorMsg: k.errorMsg
       };
     });
+  }
+
+  async updateKeyMetrics(keyObj) {
+    if (!keyObj || !keyObj.hash) return;
+    try {
+      if (this.userId && this.userId > 0) {
+        await pool.query(
+          `UPDATE user_api_keys 
+           SET call_count = ?, request_count = ?, rate_limit_count = ?, last_used_at = ?, status = ?, rate_limited_until = ?, error_msg = ?
+           WHERE user_id = ? AND key_hash = ?`,
+          [
+            keyObj.callCount || 0,
+            keyObj.requestCount || 0,
+            keyObj.rateLimitCount || 0,
+            keyObj.lastUsed || null,
+            keyObj.status || 'active',
+            keyObj.rateLimitedUntil || null,
+            keyObj.errorMsg || null,
+            this.userId,
+            keyObj.hash
+          ]
+        );
+      } else {
+        await pool.query(
+          `UPDATE api_keys_vault 
+           SET call_count = ?, request_count = ?, rate_limit_count = ?, last_used_at = ?, status = ?, rate_limited_until = ?, error_msg = ?
+           WHERE key_hash = ?`,
+          [
+            keyObj.callCount || 0,
+            keyObj.requestCount || 0,
+            keyObj.rateLimitCount || 0,
+            keyObj.lastUsed || null,
+            keyObj.status || 'active',
+            keyObj.rateLimitedUntil || null,
+            keyObj.errorMsg || null,
+            keyObj.hash
+          ]
+        );
+      }
+    } catch (err) {
+      console.warn('[KeyPool] Metric sync notice:', err.message);
+    }
   }
 
   resetStatuses() {
@@ -192,9 +241,15 @@ class GeminiKeyPool {
       k.errorMsg = '';
     });
     // Reset status in DB vault
-    pool.query(`UPDATE api_keys_vault SET status = 'active', rate_limited_until = NULL, error_msg = NULL`).catch(err => {
-      console.warn('[KeyVault] Failed to reset DB statuses:', err.message);
-    });
+    if (this.userId && this.userId > 0) {
+      pool.query(`UPDATE user_api_keys SET status = 'active', rate_limited_until = NULL, error_msg = NULL WHERE user_id = ?`, [this.userId]).catch(err => {
+        console.warn('[UserKeyVault] Failed to reset DB statuses:', err.message);
+      });
+    } else {
+      pool.query(`UPDATE api_keys_vault SET status = 'active', rate_limited_until = NULL, error_msg = NULL`).catch(err => {
+        console.warn('[KeyVault] Failed to reset DB statuses:', err.message);
+      });
+    }
     return this.getStatus();
   }
 
@@ -221,10 +276,11 @@ class GeminiKeyPool {
     if (activeIndices.length === 0) return -1;
 
     // Round-robin selection
-    this.currentIndex = (this.currentIndex + 1) % this.keys.length;
+    let nextIdx = (this.currentIndex + 1) % this.keys.length;
+    if (nextIdx < 0) nextIdx = 0;
     let attempts = 0;
     while (attempts < this.keys.length) {
-      const idx = (this.currentIndex + attempts) % this.keys.length;
+      const idx = (nextIdx + attempts) % this.keys.length;
       if (this.keys[idx].status === 'active') {
         this.currentIndex = idx;
         return idx;
@@ -244,6 +300,7 @@ class GeminiKeyPool {
     const rotationLogs = [];
     let attempts = 0;
     const maxAttempts = this.keys.length;
+    let previousErrorWas429 = false;
 
     while (attempts < maxAttempts) {
       const keyIdx = this.getNextKeyIndex();
@@ -257,6 +314,23 @@ class GeminiKeyPool {
       const keyObj = this.keys[keyIdx];
       attempts++;
 
+      // Delay on Key Rotation:
+      // If rotating after a previous failure:
+      // - 429: Immediate failover without cooldown (0ms delay)
+      // - Non-429 (503, 500, network timeout): Enforce mandatory 2000ms delay to prevent 503 errors
+      if (attempts > 1) {
+        if (previousErrorWas429) {
+          rotationLogs.push(`Immediate 429 failover: Switching to Key #${keyObj.id} (${keyObj.masked}) with 0ms cooldown delay.`);
+        } else {
+          rotationLogs.push(`Key rotation delay: Enforcing 2000ms cooldown before dispatching request with Key #${keyObj.id} (${keyObj.masked}) to prevent 503 errors...`);
+          await new Promise(resolve => setTimeout(resolve, 2000));
+        }
+      }
+
+      // Track request attempt count
+      keyObj.requestCount = (keyObj.requestCount || 0) + 1;
+      this.updateKeyMetrics(keyObj).catch(() => {});
+
       try {
         rotationLogs.push(`Attempt ${attempts}: Dispatching request to Key #${keyObj.id} (${keyObj.masked}) via @google/genai SDK`);
         const result = await this.callGeminiApi({
@@ -268,17 +342,13 @@ class GeminiKeyPool {
         });
 
         // Mark success
-        keyObj.callCount++;
+        keyObj.callCount = (keyObj.callCount || 0) + 1;
         keyObj.lastUsed = Date.now();
         keyObj.status = 'active';
         keyObj.errorMsg = '';
+        previousErrorWas429 = false;
 
-        if (keyObj.hash) {
-          pool.query(
-            `UPDATE api_keys_vault SET call_count = ?, last_used_at = ?, status = 'active' WHERE key_hash = ?`,
-            [keyObj.callCount, keyObj.lastUsed, keyObj.hash]
-          ).catch(() => {});
-        }
+        this.updateKeyMetrics(keyObj).catch(() => {});
 
         return {
           ...result,
@@ -290,34 +360,28 @@ class GeminiKeyPool {
         const errMsg = err.message || 'Unknown API Error';
         console.warn(`[KeyPool] Key #${keyObj.id} failed:`, errMsg);
 
-        if (status === 429 || errMsg.includes('429') || errMsg.includes('RESOURCE_EXHAUSTED') || errMsg.includes('quota')) {
-          // Rate-limited: 60s cooldown
+        const is429 = status === 429 || errMsg.includes('429') || errMsg.includes('RESOURCE_EXHAUSTED') || errMsg.includes('quota');
+        previousErrorWas429 = is429;
+
+        if (is429) {
+          // Rate-limited: 60s cooldown, increment rate limit counter
+          keyObj.rateLimitCount = (keyObj.rateLimitCount || 0) + 1;
           keyObj.status = 'rate_limited';
           keyObj.rateLimitedUntil = Date.now() + 60000;
           keyObj.errorMsg = 'Rate Limit / Quota Exceeded (429)';
-          rotationLogs.push(`Key #${keyObj.id} hit 429 Quota Limit. Marked rate-limited (60s cooldown). Falling back to next key...`);
-
-          if (keyObj.hash) {
-            pool.query(
-              `UPDATE api_keys_vault SET status = 'rate_limited', rate_limited_until = ?, error_msg = ? WHERE key_hash = ?`,
-              [keyObj.rateLimitedUntil, keyObj.errorMsg, keyObj.hash]
-            ).catch(() => {});
-          }
+          rotationLogs.push(`Key #${keyObj.id} hit 429 Quota Limit. Marked rate-limited (60s cooldown). Immediate failover to next key.`);
+          this.updateKeyMetrics(keyObj).catch(() => {});
         } else if (status === 400 && (errMsg.includes('API_KEY_INVALID') || errMsg.includes('invalid') || errMsg.includes('API key not valid'))) {
           // Invalid API Key
           keyObj.status = 'invalid';
           keyObj.errorMsg = 'Invalid API Key';
-          rotationLogs.push(`Key #${keyObj.id} is invalid. Marked inactive. Falling back to next key...`);
-
-          if (keyObj.hash) {
-            pool.query(
-              `UPDATE api_keys_vault SET status = 'invalid', error_msg = ? WHERE key_hash = ?`,
-              [keyObj.errorMsg, keyObj.hash]
-            ).catch(() => {});
-          }
+          rotationLogs.push(`Key #${keyObj.id} is invalid. Marked inactive. Rotating to next key with 2s cooldown...`);
+          this.updateKeyMetrics(keyObj).catch(() => {});
         } else {
-          // General error - still try next key
-          rotationLogs.push(`Key #${keyObj.id} error (${errMsg}). Falling back to next key...`);
+          // General error (503 Service Unavailable, 500, network timeout, etc.)
+          keyObj.errorMsg = errMsg;
+          rotationLogs.push(`Key #${keyObj.id} error (${errMsg}). Rotating to next key with 2s cooldown...`);
+          this.updateKeyMetrics(keyObj).catch(() => {});
         }
       }
     }
@@ -334,6 +398,7 @@ class GeminiKeyPool {
     const rotationLogs = [];
     let attempts = 0;
     const maxAttempts = this.keys.length;
+    let previousErrorWas429 = false;
 
     while (attempts < maxAttempts) {
       const keyIdx = this.getNextKeyIndex();
@@ -345,6 +410,23 @@ class GeminiKeyPool {
 
       const keyObj = this.keys[keyIdx];
       attempts++;
+
+      // Delay on Key Rotation:
+      // If rotating after a previous failure:
+      // - 429: Immediate failover without cooldown (0ms delay)
+      // - Non-429 (503, 500, network timeout): Enforce mandatory 2000ms delay to prevent 503 errors
+      if (attempts > 1) {
+        if (previousErrorWas429) {
+          rotationLogs.push(`Immediate 429 failover: Switching to Key #${keyObj.id} (${keyObj.masked}) with 0ms cooldown delay.`);
+        } else {
+          rotationLogs.push(`Key rotation delay: Enforcing 2000ms cooldown before dispatching request with Key #${keyObj.id} (${keyObj.masked}) to prevent 503 errors...`);
+          await new Promise(resolve => setTimeout(resolve, 2000));
+        }
+      }
+
+      // Track request attempt count
+      keyObj.requestCount = (keyObj.requestCount || 0) + 1;
+      this.updateKeyMetrics(keyObj).catch(() => {});
 
       try {
         rotationLogs.push(`Attempt ${attempts}: Streaming request via Key #${keyObj.id} (${keyObj.masked})`);
@@ -390,17 +472,13 @@ class GeminiKeyPool {
           }
         }
 
-        keyObj.callCount++;
+        keyObj.callCount = (keyObj.callCount || 0) + 1;
         keyObj.lastUsed = Date.now();
         keyObj.status = 'active';
         keyObj.errorMsg = '';
+        previousErrorWas429 = false;
 
-        if (keyObj.hash) {
-          pool.query(
-            `UPDATE api_keys_vault SET call_count = ?, last_used_at = ?, status = 'active' WHERE key_hash = ?`,
-            [keyObj.callCount, keyObj.lastUsed, keyObj.hash]
-          ).catch(() => {});
-        }
+        this.updateKeyMetrics(keyObj, true).catch(() => {});
 
         return {
           text: fullText,
@@ -415,31 +493,25 @@ class GeminiKeyPool {
         const errMsg = err.message || 'Unknown API Error';
         console.warn(`[KeyPool Stream] Key #${keyObj.id} failed:`, errMsg);
 
-        if (status === 429 || errMsg.includes('429') || errMsg.includes('RESOURCE_EXHAUSTED') || errMsg.includes('quota')) {
+        const is429 = status === 429 || errMsg.includes('429') || errMsg.includes('RESOURCE_EXHAUSTED') || errMsg.includes('quota');
+        previousErrorWas429 = is429;
+
+        if (is429) {
+          keyObj.rateLimitCount = (keyObj.rateLimitCount || 0) + 1;
           keyObj.status = 'rate_limited';
           keyObj.rateLimitedUntil = Date.now() + 60000;
           keyObj.errorMsg = 'Rate Limit / Quota Exceeded (429)';
-          rotationLogs.push(`Key #${keyObj.id} hit 429 Quota Limit. Falling back to next key...`);
-
-          if (keyObj.hash) {
-            pool.query(
-              `UPDATE api_keys_vault SET status = 'rate_limited', rate_limited_until = ?, error_msg = ? WHERE key_hash = ?`,
-              [keyObj.rateLimitedUntil, keyObj.errorMsg, keyObj.hash]
-            ).catch(() => {});
-          }
+          rotationLogs.push(`Key #${keyObj.id} hit 429 Quota Limit. Marked rate-limited (60s cooldown). Immediate failover to next key.`);
+          this.updateKeyMetrics(keyObj).catch(() => {});
         } else if (status === 400 && (errMsg.includes('API_KEY_INVALID') || errMsg.includes('invalid') || errMsg.includes('API key not valid'))) {
           keyObj.status = 'invalid';
           keyObj.errorMsg = 'Invalid API Key';
-          rotationLogs.push(`Key #${keyObj.id} is invalid. Falling back to next key...`);
-
-          if (keyObj.hash) {
-            pool.query(
-              `UPDATE api_keys_vault SET status = 'invalid', error_msg = ? WHERE key_hash = ?`,
-              [keyObj.errorMsg, keyObj.hash]
-            ).catch(() => {});
-          }
+          rotationLogs.push(`Key #${keyObj.id} is invalid. Rotating to next key with 2s cooldown...`);
+          this.updateKeyMetrics(keyObj).catch(() => {});
         } else {
-          rotationLogs.push(`Key #${keyObj.id} error (${errMsg}). Falling back to next key...`);
+          keyObj.errorMsg = errMsg;
+          rotationLogs.push(`Key #${keyObj.id} error (${errMsg}). Rotating to next key with 2s cooldown...`);
+          this.updateKeyMetrics(keyObj).catch(() => {});
         }
       }
     }
@@ -524,8 +596,8 @@ export async function getPoolForUser(userId) {
     return cached.pool;
   }
 
-  // Create fresh pool
-  const userPool = new GeminiKeyPool();
+  // Create fresh pool with uid
+  const userPool = new GeminiKeyPool(uid);
 
   if (uid === 0) {
     // Dev/legacy: load from global api_keys_vault
@@ -534,7 +606,7 @@ export async function getPoolForUser(userId) {
     // Registered user: load from user_api_keys
     try {
       const [rows] = await pool.query(
-        `SELECT id, key_hash, encrypted_key, masked_key, status, call_count, last_used_at, rate_limited_until, error_msg 
+        `SELECT id, key_hash, encrypted_key, masked_key, status, call_count, request_count, rate_limit_count, last_used_at, rate_limited_until, error_msg 
          FROM user_api_keys WHERE user_id = ? ORDER BY id ASC`,
         [uid]
       );
@@ -549,6 +621,8 @@ export async function getPoolForUser(userId) {
             masked: row.masked_key || userPool.maskKey(rawKey),
             status: row.status || 'active',
             callCount: row.call_count || 0,
+            requestCount: row.request_count || 0,
+            rateLimitCount: row.rate_limit_count || 0,
             lastUsed: row.last_used_at || null,
             rateLimitedUntil: row.rate_limited_until || null,
             errorMsg: row.error_msg || ''
@@ -634,7 +708,7 @@ export async function getUserKeyStatus(userId) {
   }
 
   const [rows] = await pool.query(
-    `SELECT id, key_hash, masked_key, status, call_count, last_used_at, rate_limited_until, error_msg
+    `SELECT id, key_hash, masked_key, status, call_count, request_count, rate_limit_count, last_used_at, rate_limited_until, error_msg
      FROM user_api_keys WHERE user_id = ? ORDER BY id ASC`,
     [uid]
   );
@@ -649,7 +723,9 @@ export async function getUserKeyStatus(userId) {
       hash: k.key_hash ? k.key_hash.substring(0, 16) + '...' : '',
       masked: k.masked_key,
       status: effectiveStatus,
-      callCount: k.call_count,
+      callCount: k.call_count || 0,
+      requestCount: k.request_count || 0,
+      rateLimitCount: k.rate_limit_count || 0,
       lastUsed: k.last_used_at,
       rateLimitedUntil: k.rate_limited_until,
       cooldownSecondsRemaining: k.rate_limited_until && k.rate_limited_until > now ? Math.ceil((k.rate_limited_until - now) / 1000) : 0,

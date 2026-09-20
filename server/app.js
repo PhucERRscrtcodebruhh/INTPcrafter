@@ -809,13 +809,25 @@ app.post('/api/keys', optionalAuth, async (req, res) => {
       return res.json({ success: true, keys: updatedStatus });
     }
 
-    // Registered user: add single key
-    const rawKey = key || (Array.isArray(keys) ? keys[0] : null);
-    if (!rawKey) {
+    // Registered user: support single key or batch of keys
+    if (Array.isArray(keys) && keys.length > 0) {
+      const validKeys = keys.map(k => String(k).trim()).filter(Boolean);
+      if (validKeys.length === 0) {
+        return res.status(400).json({ error: 'At least one valid API key is required.' });
+      }
+      let finalStatus = null;
+      for (const k of validKeys) {
+        finalStatus = await addUserKey(userId, k);
+      }
+      return res.json({ success: true, keys: finalStatus || await getUserKeyStatus(userId) });
+    }
+
+    const rawKey = key;
+    if (!rawKey || !String(rawKey).trim()) {
       return res.status(400).json({ error: 'API key is required.' });
     }
 
-    const updatedStatus = await addUserKey(userId, rawKey);
+    const updatedStatus = await addUserKey(userId, String(rawKey).trim());
     res.json({ success: true, keys: updatedStatus });
   } catch (err) {
     res.status(500).json({ error: err.message });

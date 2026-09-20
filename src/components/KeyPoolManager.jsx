@@ -10,42 +10,51 @@ import {
   Play, 
   ShieldCheck,
   RefreshCw,
-  Info
+  Info,
+  Activity
 } from 'lucide-react';
 import { GeminiPoolService } from '../services/geminiPool';
+import { api } from '../services/api';
+
+const DRAFT_STORAGE_KEY = 'storycontainer_key_drafts';
 
 export default function KeyPoolManager() {
   const [keysList, setKeysList] = useState([]);
-  const [rawKeyInputs, setRawKeyInputs] = useState(['', '', '', '', '']);
+  const [rawKeyInputs, setRawKeyInputs] = useState(() => {
+    try {
+      const saved = localStorage.getItem(DRAFT_STORAGE_KEY);
+      if (saved) {
+        const parsed = JSON.parse(saved);
+        if (Array.isArray(parsed) && parsed.length > 0) {
+          return parsed;
+        }
+      }
+    } catch (e) {}
+    return ['', '', '', '', ''];
+  });
   const [isLoading, setIsLoading] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
   const [testResults, setTestResults] = useState({});
   const [testingKeyId, setTestingKeyId] = useState(null);
   const [notification, setNotification] = useState(null);
 
-  const loadKeys = async () => {
-    setIsLoading(true);
+  const loadKeys = async (isBackground = false) => {
+    if (!isBackground) setIsLoading(true);
     try {
       const data = await GeminiPoolService.getKeysStatus();
-      setKeysList(data);
-      if (data.length > 0 && rawKeyInputs.every(k => !k)) {
-        // If empty inputs, prefill with existing masked placeholders or count
-        const newInputs = data.map(() => '');
-        while (newInputs.length < 5) newInputs.push('');
-        setRawKeyInputs(newInputs);
-      }
+      setKeysList(data || []);
     } catch (err) {
       console.error('Failed to load key pool:', err);
     } finally {
-      setIsLoading(false);
+      if (!isBackground) setIsLoading(false);
     }
   };
 
   useEffect(() => {
-    loadKeys();
-    // Auto-refresh countdown every 5s
+    loadKeys(false);
+    // Background refresh countdown every 5s without clearing user inputs or showing spinner
     const timer = setInterval(() => {
-      loadKeys();
+      loadKeys(true);
     }, 5000);
     return () => clearInterval(timer);
   }, []);
@@ -54,11 +63,18 @@ export default function KeyPoolManager() {
     const updated = [...rawKeyInputs];
     updated[index] = value;
     setRawKeyInputs(updated);
+    try {
+      localStorage.setItem(DRAFT_STORAGE_KEY, JSON.stringify(updated));
+    } catch (e) {}
   };
 
   const handleAddKeyInput = () => {
     if (rawKeyInputs.length < 10) {
-      setRawKeyInputs([...rawKeyInputs, '']);
+      const updated = [...rawKeyInputs, ''];
+      setRawKeyInputs(updated);
+      try {
+        localStorage.setItem(DRAFT_STORAGE_KEY, JSON.stringify(updated));
+      } catch (e) {}
     }
   };
 
@@ -66,6 +82,9 @@ export default function KeyPoolManager() {
     if (rawKeyInputs.length > 1) {
       const updated = rawKeyInputs.filter((_, i) => i !== index);
       setRawKeyInputs(updated);
+      try {
+        localStorage.setItem(DRAFT_STORAGE_KEY, JSON.stringify(updated));
+      } catch (e) {}
     }
   };
 
@@ -80,20 +99,36 @@ export default function KeyPoolManager() {
     try {
       await GeminiPoolService.saveKeys(validKeys);
       setNotification({ type: 'success', message: `Successfully saved ${validKeys.length} keys to secure pool.` });
-      // Reset inputs to clean
-      setRawKeyInputs(validKeys.map(() => ''));
-      loadKeys();
+      // Reset inputs & clear draft storage only upon successful commit
+      const cleanInputs = ['', '', '', '', ''];
+      setRawKeyInputs(cleanInputs);
+      try {
+        localStorage.removeItem(DRAFT_STORAGE_KEY);
+      } catch (e) {}
+      loadKeys(false);
     } catch (err) {
+      // Retain draft in state & localStorage on failure
       setNotification({ type: 'error', message: 'Save failed: ' + err.message });
     } finally {
       setIsSaving(false);
     }
   };
 
+  const handleDeleteKey = async (keyId) => {
+    if (!keyId) return;
+    try {
+      await api.removeKey(keyId);
+      setNotification({ type: 'success', message: `Key #${keyId} removed from pool.` });
+      loadKeys(false);
+    } catch (err) {
+      setNotification({ type: 'error', message: 'Remove failed: ' + err.message });
+    }
+  };
+
   const handleResetStatuses = async () => {
     try {
       await GeminiPoolService.resetPool();
-      loadKeys();
+      loadKeys(false);
       setNotification({ type: 'success', message: 'All key rate-limit cooldowns and error flags have been reset.' });
     } catch (err) {
       setNotification({ type: 'error', message: 'Reset failed: ' + err.message });
@@ -209,13 +244,16 @@ export default function KeyPoolManager() {
                   <th className="p-3 font-semibold">KEY ID</th>
                   <th className="p-3 font-semibold">KEY SIGNATURE</th>
                   <th className="p-3 font-semibold">STATUS</th>
-                  <th className="p-3 font-semibold">TOTAL CALLS</th>
+                  <th className="p-3 font-semibold">CALLS / REQUESTS</th>
+                  <th className="p-3 font-semibold">429 LIMIT HITS</th>
                   <th className="p-3 font-semibold">COOLDOWN / DETAILS</th>
+                  <th className="p-3 font-semibold text-right">ACTION</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-800/60">
                 {keysList.map(k => {
                   const statusStyle = GeminiPoolService.formatKeyStatus(k.status);
+                  const successRate = k.requestCount > 0 ? Math.round((k.callCount / k.requestCount) * 100) : 100;
 
                   return (
                     <tr key={k.id} className="hover:bg-cyber-900/40 transition-colors">
@@ -231,7 +269,23 @@ export default function KeyPoolManager() {
                         </span>
                       </td>
                       <td className="p-3 font-mono text-slate-300">
-                        {k.callCount} calls
+                        <span className="font-semibold text-cyan-300">{k.callCount || 0}</span>
+                        <span className="text-slate-500"> / {k.requestCount || 0} reqs</span>
+                        {k.requestCount > 0 && (
+                          <span className="ml-1.5 text-[10px] text-slate-400 font-normal">
+                            ({successRate}%)
+                          </span>
+                        )}
+                      </td>
+                      <td className="p-3 font-mono">
+                        {(k.rateLimitCount || 0) > 0 ? (
+                          <span className="inline-flex items-center px-2 py-0.5 rounded text-[10px] bg-amber-950/80 border border-amber-500/40 text-amber-300 font-semibold">
+                            <AlertTriangle size={10} className="mr-1" />
+                            {k.rateLimitCount} hits
+                          </span>
+                        ) : (
+                          <span className="text-slate-500 text-[11px]">0 hits</span>
+                        )}
                       </td>
                       <td className="p-3 text-[11px] text-slate-400">
                         {k.status === 'rate_limited' && k.cooldownSecondsRemaining > 0 ? (
@@ -244,6 +298,16 @@ export default function KeyPoolManager() {
                         ) : (
                           <span className="text-emerald-400/80">Standing by</span>
                         )}
+                      </td>
+                      <td className="p-3 text-right">
+                        <button
+                          type="button"
+                          onClick={() => handleDeleteKey(k.id)}
+                          className="p-1 rounded text-slate-500 hover:text-rose-400 hover:bg-rose-950/40 transition-colors"
+                          title="Remove key from pool"
+                        >
+                          <Trash2 size={13} />
+                        </button>
                       </td>
                     </tr>
                   );

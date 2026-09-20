@@ -140,6 +140,8 @@ export async function initDatabase() {
         masked_key VARCHAR(32) NOT NULL,
         status VARCHAR(32) DEFAULT 'active',
         call_count INT DEFAULT 0,
+        request_count INT DEFAULT 0,
+        rate_limit_count INT DEFAULT 0,
         last_used_at BIGINT NULL,
         rate_limited_until BIGINT NULL,
         error_msg TEXT NULL,
@@ -147,6 +149,25 @@ export async function initDatabase() {
       ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
     `);
     console.log('[DB] Table api_keys_vault (SHA-256 secure hash) verified.');
+
+    // Migration check for api_keys_vault columns
+    try {
+      const [vaultCols] = await connection.query(
+        `SELECT COLUMN_NAME FROM INFORMATION_SCHEMA.COLUMNS 
+         WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'api_keys_vault'`
+      );
+      const vaultColNames = vaultCols.map(c => c.COLUMN_NAME);
+      if (!vaultColNames.includes('request_count')) {
+        await connection.query(`ALTER TABLE api_keys_vault ADD COLUMN request_count INT DEFAULT 0`);
+        console.log('[DB] Added request_count column to api_keys_vault.');
+      }
+      if (!vaultColNames.includes('rate_limit_count')) {
+        await connection.query(`ALTER TABLE api_keys_vault ADD COLUMN rate_limit_count INT DEFAULT 0`);
+        console.log('[DB] Added rate_limit_count column to api_keys_vault.');
+      }
+    } catch (migErr) {
+      console.warn('[DB] api_keys_vault column migration notice:', migErr.message);
+    }
 
     // 6. users (BYOK auth system)
     await connection.query(`
@@ -172,6 +193,8 @@ export async function initDatabase() {
         masked_key VARCHAR(32) NOT NULL,
         status VARCHAR(32) DEFAULT 'active',
         call_count INT DEFAULT 0,
+        request_count INT DEFAULT 0,
+        rate_limit_count INT DEFAULT 0,
         last_used_at BIGINT NULL,
         rate_limited_until BIGINT NULL,
         error_msg TEXT NULL,
@@ -181,6 +204,25 @@ export async function initDatabase() {
       ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
     `);
     console.log('[DB] Table user_api_keys (per-user BYOK vault) verified.');
+
+    // Migration check for user_api_keys columns
+    try {
+      const [userKeyCols] = await connection.query(
+        `SELECT COLUMN_NAME FROM INFORMATION_SCHEMA.COLUMNS 
+         WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'user_api_keys'`
+      );
+      const userKeyColNames = userKeyCols.map(c => c.COLUMN_NAME);
+      if (!userKeyColNames.includes('request_count')) {
+        await connection.query(`ALTER TABLE user_api_keys ADD COLUMN request_count INT DEFAULT 0`);
+        console.log('[DB] Added request_count column to user_api_keys.');
+      }
+      if (!userKeyColNames.includes('rate_limit_count')) {
+        await connection.query(`ALTER TABLE user_api_keys ADD COLUMN rate_limit_count INT DEFAULT 0`);
+        console.log('[DB] Added rate_limit_count column to user_api_keys.');
+      }
+    } catch (migErr) {
+      console.warn('[DB] user_api_keys column migration notice:', migErr.message);
+    }
 
     // 8. Add user_id column to chat_sessions (backward-compat, nullable)
     try {

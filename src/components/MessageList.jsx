@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useCallback, memo } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import remarkMath from 'remark-math';
@@ -46,7 +46,7 @@ function extractThinkingAndStory(content, isStillStreaming = false) {
   return { thinking, story, isThinkingOpen: false };
 }
 
-function ThinkingBlock({ thinking, isCurrentlyThinking = false }) {
+const ThinkingBlock = memo(function ThinkingBlock({ thinking, isCurrentlyThinking = false }) {
   const [isOpen, setIsOpen] = useState(isCurrentlyThinking);
   const thinkingTokens = estimateTokens(thinking);
 
@@ -96,6 +96,342 @@ function ThinkingBlock({ thinking, isCurrentlyThinking = false }) {
       )}
     </div>
   );
+});
+
+// Memoized single message item to prevent re-rendering entire conversation on each streaming chunk
+const MessageItem = memo(function MessageItem({
+  msg,
+  idx,
+  isEditing,
+  editingContent,
+  onStartEdit,
+  onCancelEdit,
+  onSaveEdit,
+  onEditContentChange,
+  onDeleteMessage,
+  onRegenerateMessage,
+  onOpenLoreDrawer,
+  onSelectLoreEntry,
+  onCopy,
+  isCopied
+}) {
+  const isUser = msg.role === 'user';
+  const msgTokens = estimateTokens(msg.content);
+  const hasLore = msg.retrievedLore && msg.retrievedLore.length > 0;
+  const { thinking, story } = isUser ? { thinking: null, story: msg.content } : extractThinkingAndStory(msg.content);
+
+  return (
+    <div 
+      className={`flex flex-col ${isUser ? 'items-end' : 'items-start'} group relative`}
+    >
+      {/* Author and Metadata Header */}
+      <div className="flex items-center space-x-2 text-[11px] mb-1.5 px-1">
+        {isUser ? (
+          <>
+            <span className="text-slate-400 font-mono">
+              {formatTokenCount(msgTokens)} tokens
+            </span>
+            <span className="text-cyan-400 font-bold uppercase tracking-wider">
+              Story Director
+            </span>
+            <div className="w-5 h-5 rounded bg-cyan-950 border border-cyan-500/40 flex items-center justify-center text-cyan-300">
+              <User size={11} />
+            </div>
+          </>
+        ) : (
+          <>
+            <div className="w-5 h-5 rounded bg-purple-950 border border-purple-500/40 flex items-center justify-center text-purple-300">
+              <Cpu size={11} />
+            </div>
+            <span className="text-cyan-300 font-bold uppercase tracking-wider">
+              INTP World Simulator
+            </span>
+            <span className="text-slate-500 font-mono">
+              ~{formatTokenCount(msgTokens)} tokens
+            </span>
+
+            {hasLore && (
+              <button
+                onClick={() => onOpenLoreDrawer && onOpenLoreDrawer(msg.retrievedLore)}
+                className="flex items-center space-x-1 px-1.5 py-0.2 rounded bg-cyan-950/80 border border-cyan-500/40 text-cyan-300 text-[10px] hover:bg-cyan-900 transition-colors"
+                title="View retrieved lore entries for this turn"
+              >
+                <BookOpen size={10} />
+                <span>{msg.retrievedLore.length} Canon Lore Applied</span>
+              </button>
+            )}
+          </>
+        )}
+      </div>
+
+      {/* Message Bubble Canvas */}
+      <div
+        className={`max-w-4xl w-full rounded-lg p-4 text-xs sm:text-[13px] leading-relaxed relative transition-all ${
+          isUser
+            ? 'bg-cyber-900/90 border border-cyan-500/30 text-slate-100 shadow-glow-cyan-sm'
+            : 'glass-panel border border-slate-800 text-slate-200'
+        }`}
+      >
+        {/* Google AI Studio Style Floating Action Toolbar */}
+        {!isEditing && (
+          <div className="absolute top-2 right-2 hidden group-hover:flex items-center space-x-1 bg-cyber-950/95 border border-cyan-500/30 rounded-md p-1 shadow-lg backdrop-blur-md z-10 animate-fadeIn">
+            {/* Edit Button */}
+            <button
+              onClick={() => onStartEdit(msg)}
+              className="p-1 rounded hover:bg-cyber-850 text-slate-400 hover:text-cyan-300 transition-colors"
+              title={isUser ? "Sửa prompt này" : "Chỉnh sửa nội dung truyện"}
+            >
+              <Edit3 size={13} />
+            </button>
+
+            {/* Regenerate Button */}
+            <button
+              onClick={() => onRegenerateMessage && onRegenerateMessage(msg)}
+              className="p-1 rounded hover:bg-cyber-850 text-slate-400 hover:text-cyan-300 transition-colors"
+              title={isUser ? "Chạy lại prompt này (Regenerate)" : "Tạo lại câu trả lời (Regenerate)"}
+            >
+              <RotateCcw size={13} />
+            </button>
+
+            {/* Delete Button */}
+            <button
+              onClick={() => onDeleteMessage && onDeleteMessage(msg.id, isUser)}
+              className="p-1 rounded hover:bg-cyber-850 text-slate-400 hover:text-rose-400 transition-colors"
+              title={isUser ? "Xóa prompt này" : "Xóa câu trả lời này"}
+            >
+              <Trash2 size={13} />
+            </button>
+
+            {/* Copy Button */}
+            <button
+              onClick={() => onCopy(story || msg.content, msg.id || idx)}
+              className="p-1 rounded hover:bg-cyber-850 text-slate-400 hover:text-emerald-300 transition-colors"
+              title="Sao chép văn bản"
+            >
+              {isCopied ? <Check size={13} className="text-emerald-400" /> : <Copy size={13} />}
+            </button>
+          </div>
+        )}
+
+        {/* Message Content or Inline Edit Box */}
+        {isEditing ? (
+          <div className="space-y-3 animate-fadeIn">
+            <div className="flex items-center justify-between text-[11px] text-cyan-400 font-semibold border-b border-cyan-500/20 pb-1">
+              <span className="flex items-center space-x-1">
+                <Edit3 size={12} />
+                <span>{isUser ? 'Chỉnh sửa Prompt' : 'Chỉnh sửa Văn bản'}</span>
+              </span>
+              <span className="text-slate-500 font-mono">
+                ~{estimateTokens(editingContent)} tokens
+              </span>
+            </div>
+
+            <textarea
+              rows={4}
+              value={editingContent}
+              onChange={(e) => onEditContentChange(e.target.value)}
+              autoFocus
+              className="w-full bg-cyber-950 border border-cyan-500/40 rounded-lg p-2.5 text-xs text-slate-100 font-mono leading-relaxed focus:outline-none focus:border-cyan-400 focus:shadow-glow-cyan-sm resize-y"
+            />
+
+            <div className="flex items-center justify-end space-x-2 text-xs">
+              <button
+                type="button"
+                onClick={onCancelEdit}
+                className="px-2.5 py-1 rounded bg-cyber-900 border border-slate-800 text-slate-400 hover:text-slate-200"
+              >
+                Hủy (Cancel)
+              </button>
+
+              {isUser ? (
+                <>
+                  <button
+                    type="button"
+                    onClick={() => onSaveEdit(msg, false)}
+                    className="px-3 py-1 rounded bg-cyber-850 border border-slate-700 text-slate-300 hover:text-cyan-300 text-xs"
+                  >
+                    Lưu lại
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => onSaveEdit(msg, true)}
+                    className="px-3.5 py-1 rounded bg-cyan-400 hover:bg-cyan-300 text-black font-bold text-xs flex items-center space-x-1 shadow-glow-cyan-sm"
+                  >
+                    <CornerDownLeft size={12} />
+                    <span>Lưu & Chạy lại (Submit)</span>
+                  </button>
+                </>
+              ) : (
+                <button
+                  type="button"
+                  onClick={() => onSaveEdit(msg, false)}
+                  className="px-3.5 py-1 rounded bg-cyan-400 hover:bg-cyan-300 text-black font-bold text-xs flex items-center space-x-1 shadow-glow-cyan-sm"
+                >
+                  <Save size={12} />
+                  <span>Lưu thay đổi</span>
+                </button>
+              )}
+            </div>
+          </div>
+        ) : isUser ? (
+          <div className="prose-story text-slate-100 font-mono">
+            <ReactMarkdown
+              remarkPlugins={[remarkGfm, remarkMath]}
+              rehypePlugins={[rehypeKatex]}
+            >
+              {msg.content}
+            </ReactMarkdown>
+          </div>
+        ) : (
+          <div>
+            {thinking && (
+              <ThinkingBlock thinking={thinking} isCurrentlyThinking={false} />
+            )}
+
+            <div className="prose-story select-text">
+              <ReactMarkdown
+                remarkPlugins={[remarkGfm, remarkMath]}
+                rehypePlugins={[rehypeKatex]}
+              >
+                {story || (thinking ? '*(Simulation reasoning completed. Direct the next scene.)*' : msg.content)}
+              </ReactMarkdown>
+            </div>
+          </div>
+        )}
+
+        {/* Bottom bar inside bubble: Lore chips & quick action indicators */}
+        {!isEditing && (
+          <div className="mt-3 pt-2 border-t border-slate-800/60 flex flex-wrap items-center justify-between gap-2">
+            {hasLore ? (
+              <div className="flex flex-wrap items-center gap-1.5">
+                <span className="text-[10px] text-slate-500 uppercase tracking-wider">
+                  RAG Verified:
+                </span>
+                {msg.retrievedLore.map(lore => (
+                  <button
+                    key={lore.id}
+                    onClick={() => onSelectLoreEntry && onSelectLoreEntry(lore)}
+                    className="px-2 py-0.5 rounded text-[10px] bg-cyber-950 border border-cyan-500/30 text-cyan-300 hover:border-cyan-400 hover:text-cyan-200 transition-all flex items-center space-x-1"
+                  >
+                    <Layers size={10} />
+                    <span>{lore.title}</span>
+                  </button>
+                ))}
+              </div>
+            ) : <div />}
+
+            {/* Inline Action Row for Mobile / Default touch */}
+            <div className="flex items-center space-x-3 text-[11px] text-slate-500">
+              <button
+                onClick={() => onStartEdit(msg)}
+                className="hover:text-cyan-300 flex items-center space-x-1 transition-colors"
+                title={isUser ? "Sửa prompt" : "Sửa văn bản"}
+              >
+                <Edit3 size={11} />
+                <span>Sửa</span>
+              </button>
+
+              <button
+                onClick={() => onRegenerateMessage && onRegenerateMessage(msg)}
+                className="hover:text-cyan-300 flex items-center space-x-1 transition-colors"
+                title="Chạy lại câu trả lời"
+              >
+                <RotateCcw size={11} />
+                <span>Regen</span>
+              </button>
+
+              <button
+                onClick={() => onDeleteMessage && onDeleteMessage(msg.id, isUser)}
+                className="hover:text-rose-400 flex items-center space-x-1 transition-colors"
+                title={isUser ? "Xóa prompt" : "Xóa tin nhắn"}
+              >
+                <Trash2 size={11} />
+                <span>Xóa</span>
+              </button>
+
+              <button
+                onClick={() => onCopy(story || msg.content, msg.id || idx)}
+                className="hover:text-slate-300 flex items-center space-x-1 transition-colors"
+                title="Copy text"
+              >
+                {isCopied ? (
+                  <>
+                    <Check size={11} className="text-emerald-400" />
+                    <span className="text-emerald-400">Copied</span>
+                  </>
+                ) : (
+                  <>
+                    <Copy size={11} />
+                    <span>Copy</span>
+                  </>
+                )}
+              </button>
+            </div>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}, (prev, next) => {
+  return (
+    prev.msg.id === next.msg.id &&
+    prev.msg.content === next.msg.content &&
+    prev.msg.role === next.msg.role &&
+    prev.isEditing === next.isEditing &&
+    prev.editingContent === next.editingContent &&
+    prev.isCopied === next.isCopied &&
+    prev.msg.retrievedLore === next.msg.retrievedLore
+  );
+});
+
+// Streaming bubble extracted for zero overhead on existing message items
+function StreamingBubble({ streamingText, streamingLore }) {
+  const activeStreamParsed = extractThinkingAndStory(streamingText, true);
+
+  return (
+    <div className="flex flex-col items-start group animate-fadeIn">
+      <div className="flex items-center space-x-2 text-[11px] mb-1.5 px-1">
+        <div className="w-5 h-5 rounded bg-purple-950 border border-purple-500/40 flex items-center justify-center text-purple-300">
+          <Cpu size={11} className="animate-spin" />
+        </div>
+        <span className="text-cyan-300 font-bold uppercase tracking-wider">
+          INTP World Simulator
+        </span>
+        <span className="text-cyan-400 font-mono text-[10px] flex items-center space-x-1">
+          <span className="w-1.5 h-1.5 rounded-full bg-cyan-400 animate-ping" />
+          <span>Streaming token outputs...</span>
+        </span>
+
+        {streamingLore.length > 0 && (
+          <span className="px-1.5 py-0.2 rounded bg-cyan-950/80 border border-cyan-500/40 text-cyan-300 text-[10px]">
+            {streamingLore.length} Canon Lore Applied
+          </span>
+        )}
+      </div>
+
+      <div className="max-w-4xl w-full rounded-lg p-4 text-xs sm:text-[13px] leading-relaxed glass-panel border border-cyan-500/40 text-slate-200 shadow-glow-cyan-sm">
+        {activeStreamParsed && activeStreamParsed.thinking && (
+          <ThinkingBlock 
+            thinking={activeStreamParsed.thinking} 
+            isCurrentlyThinking={activeStreamParsed.isThinkingOpen} 
+          />
+        )}
+
+        <div className="prose-story select-text">
+          <ReactMarkdown
+            remarkPlugins={[remarkGfm, remarkMath]}
+            rehypePlugins={[rehypeKatex]}
+          >
+            {activeStreamParsed?.story || ''}
+          </ReactMarkdown>
+
+          {!activeStreamParsed?.isThinkingOpen && (
+            <span className="inline-block w-2 h-4 bg-cyan-400 ml-1 animate-pulse align-middle shadow-glow-cyan" />
+          )}
+        </div>
+      </div>
+    </div>
+  );
 }
 
 export default function MessageList({ 
@@ -112,6 +448,7 @@ export default function MessageList({
 }) {
   const scrollEndRef = useRef(null);
   const [copiedId, setCopiedId] = useState(null);
+  const lastScrollTimeRef = useRef(0);
 
   // Inline editing state
   const [editingId, setEditingId] = useState(null);
@@ -122,27 +459,40 @@ export default function MessageList({
   const [displayLimit, setDisplayLimit] = useState(DEFAULT_PRUNE_LIMIT);
   const [isPruningEnabled, setIsPruningEnabled] = useState(true);
 
+  // Optimized scrolling: Throttle auto-scrolling during rapid streaming to prevent UI lockup
   useEffect(() => {
-    scrollEndRef.current?.scrollIntoView({ behavior: 'smooth' });
-  }, [messages, streamingText, isLoading]);
+    if (isStreaming) {
+      const now = Date.now();
+      if (now - lastScrollTimeRef.current > 80) {
+        lastScrollTimeRef.current = now;
+        scrollEndRef.current?.scrollIntoView({ behavior: 'auto' });
+      }
+    } else {
+      scrollEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+    }
+  }, [messages, streamingText, isLoading, isStreaming]);
 
-  const handleCopy = (text, id) => {
+  const handleCopy = useCallback((text, id) => {
     navigator.clipboard.writeText(text);
     setCopiedId(id);
     setTimeout(() => setCopiedId(null), 2000);
-  };
+  }, []);
 
-  const handleStartEdit = (msg) => {
+  const handleStartEdit = useCallback((msg) => {
     setEditingId(msg.id);
     setEditingContent(msg.content);
-  };
+  }, []);
 
-  const handleCancelEdit = () => {
+  const handleCancelEdit = useCallback(() => {
     setEditingId(null);
     setEditingContent('');
-  };
+  }, []);
 
-  const handleSaveEdit = async (msg, shouldRegenerate = false) => {
+  const handleEditContentChange = useCallback((val) => {
+    setEditingContent(val);
+  }, []);
+
+  const handleSaveEdit = useCallback(async (msg, shouldRegenerate = false) => {
     if (!editingContent.trim()) return;
     const newContent = editingContent.trim();
     setEditingId(null);
@@ -151,7 +501,7 @@ export default function MessageList({
     if (onEditMessage) {
       await onEditMessage(msg.id, newContent, shouldRegenerate, msg.role);
     }
-  };
+  }, [editingContent, onEditMessage]);
 
   // Determine pruned slice
   const totalCount = messages.length;
@@ -159,14 +509,14 @@ export default function MessageList({
   const hiddenCount = isPruned ? totalCount - displayLimit : 0;
   const visibleMessages = isPruned ? messages.slice(-displayLimit) : messages;
 
-  const handleLoadMore = () => {
+  const handleLoadMore = useCallback(() => {
     setDisplayLimit(prev => Math.min(totalCount, prev + 10));
-  };
+  }, [totalCount]);
 
-  const handleShowAll = () => {
+  const handleShowAll = useCallback(() => {
     setDisplayLimit(totalCount);
     setIsPruningEnabled(false);
-  };
+  }, [totalCount]);
 
   if (messages.length === 0 && !isLoading && !isStreaming) {
     return (
@@ -193,8 +543,6 @@ export default function MessageList({
       </div>
     );
   }
-
-  const activeStreamParsed = isStreaming ? extractThinkingAndStory(streamingText, true) : null;
 
   return (
     <div className="flex-1 overflow-y-auto p-4 sm:p-6 space-y-6">
@@ -225,312 +573,32 @@ export default function MessageList({
       )}
 
       {/* Render Visible Message History */}
-      {visibleMessages.map((msg, idx) => {
-        const isUser = msg.role === 'user';
-        const msgTokens = estimateTokens(msg.content);
-        const hasLore = msg.retrievedLore && msg.retrievedLore.length > 0;
-        const { thinking, story } = isUser ? { thinking: null, story: msg.content } : extractThinkingAndStory(msg.content);
-        const isEditing = editingId === msg.id;
-
-        return (
-          <div 
-            key={msg.id || idx}
-            className={`flex flex-col ${isUser ? 'items-end' : 'items-start'} group relative`}
-          >
-            {/* Author and Metadata Header */}
-            <div className="flex items-center space-x-2 text-[11px] mb-1.5 px-1">
-              {isUser ? (
-                <>
-                  <span className="text-slate-400 font-mono">
-                    {formatTokenCount(msgTokens)} tokens
-                  </span>
-                  <span className="text-cyan-400 font-bold uppercase tracking-wider">
-                    Story Director
-                  </span>
-                  <div className="w-5 h-5 rounded bg-cyan-950 border border-cyan-500/40 flex items-center justify-center text-cyan-300">
-                    <User size={11} />
-                  </div>
-                </>
-              ) : (
-                <>
-                  <div className="w-5 h-5 rounded bg-purple-950 border border-purple-500/40 flex items-center justify-center text-purple-300">
-                    <Cpu size={11} />
-                  </div>
-                  <span className="text-cyan-300 font-bold uppercase tracking-wider">
-                    INTP World Simulator
-                  </span>
-                  <span className="text-slate-500 font-mono">
-                    ~{formatTokenCount(msgTokens)} tokens
-                  </span>
-
-                  {hasLore && (
-                    <button
-                      onClick={() => onOpenLoreDrawer && onOpenLoreDrawer(msg.retrievedLore)}
-                      className="flex items-center space-x-1 px-1.5 py-0.2 rounded bg-cyan-950/80 border border-cyan-500/40 text-cyan-300 text-[10px] hover:bg-cyan-900 transition-colors"
-                      title="View retrieved lore entries for this turn"
-                    >
-                      <BookOpen size={10} />
-                      <span>{msg.retrievedLore.length} Canon Lore Applied</span>
-                    </button>
-                  )}
-                </>
-              )}
-            </div>
-
-            {/* Message Bubble Canvas */}
-            <div
-              className={`max-w-4xl w-full rounded-lg p-4 text-xs sm:text-[13px] leading-relaxed relative transition-all ${
-                isUser
-                  ? 'bg-cyber-900/90 border border-cyan-500/30 text-slate-100 shadow-glow-cyan-sm'
-                  : 'glass-panel border border-slate-800 text-slate-200'
-              }`}
-            >
-              {/* Google AI Studio Style Floating Action Toolbar */}
-              {!isEditing && (
-                <div className="absolute top-2 right-2 hidden group-hover:flex items-center space-x-1 bg-cyber-950/95 border border-cyan-500/30 rounded-md p-1 shadow-lg backdrop-blur-md z-10 animate-fadeIn">
-                  {/* Edit Button */}
-                  <button
-                    onClick={() => handleStartEdit(msg)}
-                    className="p-1 rounded hover:bg-cyber-850 text-slate-400 hover:text-cyan-300 transition-colors"
-                    title={isUser ? "Sửa prompt này" : "Chỉnh sửa nội dung truyện"}
-                  >
-                    <Edit3 size={13} />
-                  </button>
-
-                  {/* Regenerate Button */}
-                  <button
-                    onClick={() => onRegenerateMessage && onRegenerateMessage(msg)}
-                    className="p-1 rounded hover:bg-cyber-850 text-slate-400 hover:text-cyan-300 transition-colors"
-                    title={isUser ? "Chạy lại prompt này (Regenerate)" : "Tạo lại câu trả lời (Regenerate)"}
-                  >
-                    <RotateCcw size={13} />
-                  </button>
-
-                  {/* Delete Button */}
-                  <button
-                    onClick={() => onDeleteMessage && onDeleteMessage(msg.id, isUser)}
-                    className="p-1 rounded hover:bg-cyber-850 text-slate-400 hover:text-rose-400 transition-colors"
-                    title={isUser ? "Xóa prompt này" : "Xóa câu trả lời này"}
-                  >
-                    <Trash2 size={13} />
-                  </button>
-
-                  {/* Copy Button */}
-                  <button
-                    onClick={() => handleCopy(story || msg.content, msg.id || idx)}
-                    className="p-1 rounded hover:bg-cyber-850 text-slate-400 hover:text-emerald-300 transition-colors"
-                    title="Sao chép văn bản"
-                  >
-                    {copiedId === (msg.id || idx) ? <Check size={13} className="text-emerald-400" /> : <Copy size={13} />}
-                  </button>
-                </div>
-              )}
-
-              {/* Message Content or Inline Edit Box */}
-              {isEditing ? (
-                <div className="space-y-3 animate-fadeIn">
-                  <div className="flex items-center justify-between text-[11px] text-cyan-400 font-semibold border-b border-cyan-500/20 pb-1">
-                    <span className="flex items-center space-x-1">
-                      <Edit3 size={12} />
-                      <span>{isUser ? 'Chỉnh sửa Prompt' : 'Chỉnh sửa Văn bản'}</span>
-                    </span>
-                    <span className="text-slate-500 font-mono">
-                      ~{estimateTokens(editingContent)} tokens
-                    </span>
-                  </div>
-
-                  <textarea
-                    rows={4}
-                    value={editingContent}
-                    onChange={(e) => setEditingContent(e.target.value)}
-                    autoFocus
-                    className="w-full bg-cyber-950 border border-cyan-500/40 rounded-lg p-2.5 text-xs text-slate-100 font-mono leading-relaxed focus:outline-none focus:border-cyan-400 focus:shadow-glow-cyan-sm resize-y"
-                  />
-
-                  <div className="flex items-center justify-end space-x-2 text-xs">
-                    <button
-                      type="button"
-                      onClick={handleCancelEdit}
-                      className="px-2.5 py-1 rounded bg-cyber-900 border border-slate-800 text-slate-400 hover:text-slate-200"
-                    >
-                      Hủy (Cancel)
-                    </button>
-
-                    {isUser ? (
-                      <>
-                        <button
-                          type="button"
-                          onClick={() => handleSaveEdit(msg, false)}
-                          className="px-3 py-1 rounded bg-cyber-850 border border-slate-700 text-slate-300 hover:text-cyan-300 text-xs"
-                        >
-                          Lưu lại
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() => handleSaveEdit(msg, true)}
-                          className="px-3.5 py-1 rounded bg-cyan-400 hover:bg-cyan-300 text-black font-bold text-xs flex items-center space-x-1 shadow-glow-cyan-sm"
-                        >
-                          <CornerDownLeft size={12} />
-                          <span>Lưu & Chạy lại (Submit)</span>
-                        </button>
-                      </>
-                    ) : (
-                      <button
-                        type="button"
-                        onClick={() => handleSaveEdit(msg, false)}
-                        className="px-3.5 py-1 rounded bg-cyan-400 hover:bg-cyan-300 text-black font-bold text-xs flex items-center space-x-1 shadow-glow-cyan-sm"
-                      >
-                        <Save size={12} />
-                        <span>Lưu thay đổi</span>
-                      </button>
-                    )}
-                  </div>
-                </div>
-              ) : isUser ? (
-                <div className="prose-story text-slate-100 font-mono">
-                  <ReactMarkdown
-                    remarkPlugins={[remarkGfm, remarkMath]}
-                    rehypePlugins={[rehypeKatex]}
-                  >
-                    {msg.content}
-                  </ReactMarkdown>
-                </div>
-              ) : (
-                <div>
-                  {thinking && (
-                    <ThinkingBlock thinking={thinking} isCurrentlyThinking={false} />
-                  )}
-
-                  <div className="prose-story select-text">
-                    <ReactMarkdown
-                      remarkPlugins={[remarkGfm, remarkMath]}
-                      rehypePlugins={[rehypeKatex]}
-                    >
-                      {story || (thinking ? '*(Simulation reasoning completed. Direct the next scene.)*' : msg.content)}
-                    </ReactMarkdown>
-                  </div>
-                </div>
-              )}
-
-              {/* Bottom bar inside bubble: Lore chips & quick action indicators */}
-              {!isEditing && (
-                <div className="mt-3 pt-2 border-t border-slate-800/60 flex flex-wrap items-center justify-between gap-2">
-                  {hasLore ? (
-                    <div className="flex flex-wrap items-center gap-1.5">
-                      <span className="text-[10px] text-slate-500 uppercase tracking-wider">
-                        RAG Verified:
-                      </span>
-                      {msg.retrievedLore.map(lore => (
-                        <button
-                          key={lore.id}
-                          onClick={() => onSelectLoreEntry && onSelectLoreEntry(lore)}
-                          className="px-2 py-0.5 rounded text-[10px] bg-cyber-950 border border-cyan-500/30 text-cyan-300 hover:border-cyan-400 hover:text-cyan-200 transition-all flex items-center space-x-1"
-                        >
-                          <Layers size={10} />
-                          <span>{lore.title}</span>
-                        </button>
-                      ))}
-                    </div>
-                  ) : <div />}
-
-                  {/* Inline Action Row for Mobile / Default touch */}
-                  <div className="flex items-center space-x-3 text-[11px] text-slate-500">
-                    <button
-                      onClick={() => handleStartEdit(msg)}
-                      className="hover:text-cyan-300 flex items-center space-x-1 transition-colors"
-                      title={isUser ? "Sửa prompt" : "Sửa văn bản"}
-                    >
-                      <Edit3 size={11} />
-                      <span>{isUser ? 'Sửa' : 'Sửa'}</span>
-                    </button>
-
-                    <button
-                      onClick={() => onRegenerateMessage && onRegenerateMessage(msg)}
-                      className="hover:text-cyan-300 flex items-center space-x-1 transition-colors"
-                      title="Chạy lại câu trả lời"
-                    >
-                      <RotateCcw size={11} />
-                      <span>Regen</span>
-                    </button>
-
-                    <button
-                      onClick={() => onDeleteMessage && onDeleteMessage(msg.id, isUser)}
-                      className="hover:text-rose-400 flex items-center space-x-1 transition-colors"
-                      title={isUser ? "Xóa prompt" : "Xóa tin nhắn"}
-                    >
-                      <Trash2 size={11} />
-                      <span>Xóa</span>
-                    </button>
-
-                    <button
-                      onClick={() => handleCopy(story || msg.content, msg.id || idx)}
-                      className="hover:text-slate-300 flex items-center space-x-1 transition-colors"
-                      title="Copy text"
-                    >
-                      {copiedId === (msg.id || idx) ? (
-                        <>
-                          <Check size={11} className="text-emerald-400" />
-                          <span className="text-emerald-400">Copied</span>
-                        </>
-                      ) : (
-                        <>
-                          <Copy size={11} />
-                          <span>Copy</span>
-                        </>
-                      )}
-                    </button>
-                  </div>
-                </div>
-              )}
-            </div>
-          </div>
-        );
-      })}
+      {visibleMessages.map((msg, idx) => (
+        <MessageItem
+          key={msg.id || idx}
+          msg={msg}
+          idx={idx}
+          isEditing={editingId === msg.id}
+          editingContent={editingContent}
+          onStartEdit={handleStartEdit}
+          onCancelEdit={handleCancelEdit}
+          onSaveEdit={handleSaveEdit}
+          onEditContentChange={handleEditContentChange}
+          onDeleteMessage={onDeleteMessage}
+          onRegenerateMessage={onRegenerateMessage}
+          onOpenLoreDrawer={onOpenLoreDrawer}
+          onSelectLoreEntry={onSelectLoreEntry}
+          onCopy={handleCopy}
+          isCopied={copiedId === (msg.id || idx)}
+        />
+      ))}
 
       {/* Real-time Streaming & Typing Effect Bubble */}
       {isStreaming && (
-        <div className="flex flex-col items-start group animate-fadeIn">
-          <div className="flex items-center space-x-2 text-[11px] mb-1.5 px-1">
-            <div className="w-5 h-5 rounded bg-purple-950 border border-purple-500/40 flex items-center justify-center text-purple-300">
-              <Cpu size={11} className="animate-spin" />
-            </div>
-            <span className="text-cyan-300 font-bold uppercase tracking-wider">
-              INTP World Simulator
-            </span>
-            <span className="text-cyan-400 font-mono text-[10px] flex items-center space-x-1">
-              <span className="w-1.5 h-1.5 rounded-full bg-cyan-400 animate-ping" />
-              <span>Streaming token outputs...</span>
-            </span>
-
-            {streamingLore.length > 0 && (
-              <span className="px-1.5 py-0.2 rounded bg-cyan-950/80 border border-cyan-500/40 text-cyan-300 text-[10px]">
-                {streamingLore.length} Canon Lore Applied
-              </span>
-            )}
-          </div>
-
-          <div className="max-w-4xl w-full rounded-lg p-4 text-xs sm:text-[13px] leading-relaxed glass-panel border border-cyan-500/40 text-slate-200 shadow-glow-cyan-sm">
-            {activeStreamParsed && activeStreamParsed.thinking && (
-              <ThinkingBlock 
-                thinking={activeStreamParsed.thinking} 
-                isCurrentlyThinking={activeStreamParsed.isThinkingOpen} 
-              />
-            )}
-
-            <div className="prose-story select-text">
-              <ReactMarkdown
-                remarkPlugins={[remarkGfm, remarkMath]}
-                rehypePlugins={[rehypeKatex]}
-              >
-                {activeStreamParsed?.story || ''}
-              </ReactMarkdown>
-
-              {!activeStreamParsed?.isThinkingOpen && (
-                <span className="inline-block w-2 h-4 bg-cyan-400 ml-1 animate-pulse align-middle shadow-glow-cyan" />
-              )}
-            </div>
-          </div>
-        </div>
+        <StreamingBubble 
+          streamingText={streamingText} 
+          streamingLore={streamingLore} 
+        />
       )}
 
       {/* Loading Skeleton before first token chunk */}
