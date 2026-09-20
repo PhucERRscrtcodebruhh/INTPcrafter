@@ -17,11 +17,13 @@ import {
   ChevronRight,
   ShieldCheck,
   Check,
-  X
+  X,
+  Network
 } from 'lucide-react';
 import LorebookManager from './LorebookManager';
 import WorldRulesMatrix from './WorldRulesMatrix';
 import WorldInstructionEditor from './WorldInstructionEditor';
+import WorldGraphCanvas from './worldGraph/WorldGraphCanvas';
 import KeyPoolManager from './KeyPoolManager';
 import InstructionEditor from './InstructionEditor';
 import Modal from './Modal';
@@ -393,6 +395,18 @@ export default function LorebookDashboard({ onBackToStudio, books: externalBooks
                       </button>
 
                       <button
+                        onClick={() => setWorldWorkspaceTab('graph')}
+                        className={`flex items-center space-x-1.5 px-3 py-1 rounded transition-all ${
+                          worldWorkspaceTab === 'graph'
+                            ? 'bg-cyan-500/20 text-cyan-300 border border-cyan-500/40 shadow-glow-cyan-sm font-semibold'
+                            : 'text-slate-400 hover:text-slate-200'
+                        }`}
+                      >
+                        <Network size={13} />
+                        <span>Visual World Graph</span>
+                      </button>
+
+                      <button
                         onClick={() => setWorldWorkspaceTab('instruction')}
                         className={`flex items-center space-x-1.5 px-3 py-1 rounded transition-all ${
                           worldWorkspaceTab === 'instruction'
@@ -417,7 +431,7 @@ export default function LorebookDashboard({ onBackToStudio, books: externalBooks
                 </div>
 
                 {/* Level 2 Active Tab Panels */}
-                <div className="flex-1 overflow-hidden">
+                <div className="flex-1 overflow-hidden flex flex-col">
                   {worldWorkspaceTab === 'lore' && (
                     <LorebookManager
                       bookId={activeBook.id}
@@ -429,6 +443,12 @@ export default function LorebookDashboard({ onBackToStudio, books: externalBooks
                     <WorldRulesMatrix
                       book={activeBook}
                       onEntriesUpdated={loadBooks}
+                    />
+                  )}
+                  {worldWorkspaceTab === 'graph' && (
+                    <WorldGraphCanvas
+                      activeBookId={activeBook.id}
+                      activeBookTitle={activeBook.title}
                     />
                   )}
                   {worldWorkspaceTab === 'instruction' && (
