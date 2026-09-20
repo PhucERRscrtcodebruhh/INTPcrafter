@@ -103,6 +103,7 @@ export async function initDatabase() {
       CREATE TABLE IF NOT EXISTS chat_sessions (
         id VARCHAR(64) PRIMARY KEY,
         title VARCHAR(255) NOT NULL,
+        rolling_threshold INT DEFAULT 32768,
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
       ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
     `);
@@ -398,18 +399,23 @@ export async function initDatabase() {
     `);
     console.log('[DB] Table node_connections verified.');
 
-    // 12. Add book_id to chat_sessions (allows linking story to specific book)
+    // 12. Add book_id and rolling_threshold to chat_sessions (allows linking story to specific book and persisting context window)
     try {
-      const [sessBookCols] = await connection.query(
+      const [sessCols] = await connection.query(
         `SELECT COLUMN_NAME FROM INFORMATION_SCHEMA.COLUMNS 
-         WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'chat_sessions' AND COLUMN_NAME = 'book_id'`
+         WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'chat_sessions'`
       );
-      if (sessBookCols.length === 0) {
+      const sessColNames = sessCols.map(c => c.COLUMN_NAME);
+      if (!sessColNames.includes('book_id')) {
         await connection.query(`ALTER TABLE chat_sessions ADD COLUMN book_id INT NULL`);
         console.log('[DB] Added book_id column to chat_sessions.');
       }
-    } catch (sessBookErr) {
-      console.warn('[DB] chat_sessions.book_id notice:', sessBookErr.message);
+      if (!sessColNames.includes('rolling_threshold')) {
+        await connection.query(`ALTER TABLE chat_sessions ADD COLUMN rolling_threshold INT DEFAULT 32768`);
+        console.log('[DB] Added rolling_threshold column to chat_sessions.');
+      }
+    } catch (sessColErr) {
+      console.warn('[DB] chat_sessions columns migration notice:', sessColErr.message);
     }
 
     // Seed or upgrade master instruction to include <thinking> & LaTeX

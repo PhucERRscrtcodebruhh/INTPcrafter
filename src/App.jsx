@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
 import Navbar from './components/Navbar';
 import ChatCanvas from './components/ChatCanvas';
 import LorebookDashboard from './components/LorebookDashboard';
@@ -23,10 +23,9 @@ Thêm nhân vật, địa điểm, hệ phép thuật, phe phái vào Lorebook.
 AI sẽ tự động truy xuất lore liên quan (RAG) khi bạn chat.
 
 ## ⚙️ Các nút hữu ích
-- **Sửa prompt** (Edit) — Sửa lại lời nói quá khứ
-- **Regenerate** (↻) — Bắt AI viết lại
-- **Xóa** (🗑) — Xóa tin nhắn
-- **\`<thinking>\`** — Xem AI suy nghĩ gì bên trong
+- **Zen Mode**: Phím \`Ctrl + \\\` hoặc nút góc trên bên phải để ẩn toàn bộ thanh công cụ, tập trung viết lách tối đa.
+- **Model**: Chọn giữa Gemini 3.8 Flash, DeepSeek-V3, DeepSeek-R1, OpenRouter hoặc Hugging Face.
+- **Ngưỡng cuộn (Rolling Context)**: Tự động lưu riêng cho từng Chronicle.
 
 ## 🔐 Tài khoản
 - Đăng ký tài khoản riêng để lưu session & API key cá nhân
@@ -52,11 +51,12 @@ export default function App() {
   const [topP, setTopP] = useState(0.95);
   const [maxOutputTokens, setMaxOutputTokens] = useState(4096);
 
-  // Context & Token Tracking
+  // Context & Token Tracking (Bound per chat session)
   const [currentTokens, setCurrentTokens] = useState(0);
   const [rollingThreshold, setRollingThreshold] = useState(32768);
   const [isRolled, setIsRolled] = useState(false);
   const [historyStats, setHistoryStats] = useState(null);
+  const rollingDebounceRef = useRef(null);
 
   // Streaming & Realtime Typing States
   const [isStreaming, setIsStreaming] = useState(false);
@@ -159,6 +159,45 @@ export default function App() {
     loadBooks();
     loadKeyPoolTelemetry();
   }, [currentUser?.id]);
+
+  // Synchronize session-specific rollingThreshold whenever active session changes
+  useEffect(() => {
+    if (activeSessionId) {
+      if (rollingDebounceRef.current) {
+        clearTimeout(rollingDebounceRef.current);
+      }
+      const session = sessions.find(s => s.id === activeSessionId);
+      const cached = localStorage.getItem('storycontainer_rolling_' + activeSessionId);
+      const sessionThresh = session?.rolling_threshold || session?.rollingThreshold || (cached ? parseInt(cached, 10) : 32768);
+      setRollingThreshold(sessionThresh);
+    }
+  }, [activeSessionId, sessions]);
+
+  // Debounced updater for rolling threshold per session
+  const handleUpdateRollingThreshold = (newVal) => {
+    const val = parseInt(newVal, 10) || 32768;
+    setRollingThreshold(val);
+
+    if (activeSessionId) {
+      // 1. Immediately cache in localStorage for instant offline access
+      localStorage.setItem('storycontainer_rolling_' + activeSessionId, val);
+
+      // 2. Immediately update in sessions state
+      setSessions(prev => prev.map(s => s.id === activeSessionId ? { ...s, rolling_threshold: val } : s));
+
+      // 3. Debounce DB update by 300ms
+      if (rollingDebounceRef.current) {
+        clearTimeout(rollingDebounceRef.current);
+      }
+      rollingDebounceRef.current = setTimeout(async () => {
+        try {
+          await api.updateSession(activeSessionId, { rolling_threshold: val });
+        } catch (err) {
+          console.warn('Failed to persist session rolling_threshold to server:', err);
+        }
+      }, 300);
+    }
+  };
 
   const loadSessions = async () => {
     try {
@@ -592,7 +631,7 @@ export default function App() {
             setMaxOutputTokens={setMaxOutputTokens}
             currentTokens={currentTokens}
             rollingThreshold={rollingThreshold}
-            onUpdateRollingThreshold={(val) => setRollingThreshold(val)}
+            onUpdateRollingThreshold={handleUpdateRollingThreshold}
             isRolled={isRolled}
             historyStats={historyStats}
             retrievedLore={retrievedLore}

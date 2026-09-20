@@ -60,7 +60,7 @@ app.get('/api/sessions', optionalAuth, async (req, res) => {
     if (userId > 0) {
       // Registered user: show only their sessions
       [sessions] = await pool.query(
-        `SELECT s.id, s.title, s.user_id, s.book_id, b.title as book_title, s.created_at, 
+        `SELECT s.id, s.title, s.user_id, s.book_id, s.rolling_threshold, b.title as book_title, s.created_at, 
                 COUNT(m.id) as message_count,
                 MAX(m.created_at) as last_message_at
          FROM chat_sessions s
@@ -74,7 +74,7 @@ app.get('/api/sessions', optionalAuth, async (req, res) => {
     } else {
       // Dev/anonymous: show sessions with NULL or 0 user_id
       [sessions] = await pool.query(
-        `SELECT s.id, s.title, s.user_id, s.book_id, b.title as book_title, s.created_at, 
+        `SELECT s.id, s.title, s.user_id, s.book_id, s.rolling_threshold, b.title as book_title, s.created_at, 
                 COUNT(m.id) as message_count,
                 MAX(m.created_at) as last_message_at
          FROM chat_sessions s
@@ -97,11 +97,15 @@ app.post('/api/sessions', optionalAuth, async (req, res) => {
     const id = `session_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
     const title = (req.body.title || 'Untitled Chronicle').trim();
     const bookId = req.body.book_id ? parseInt(req.body.book_id, 10) : null;
+    const rollingThreshold = req.body.rolling_threshold !== undefined 
+      ? parseInt(req.body.rolling_threshold, 10) 
+      : (req.body.rollingThreshold !== undefined ? parseInt(req.body.rollingThreshold, 10) : 32768);
+
     await pool.query(
-      `INSERT INTO chat_sessions (id, title, user_id, book_id) VALUES (?, ?, ?, ?)`,
-      [id, title, userId > 0 ? userId : null, bookId]
+      `INSERT INTO chat_sessions (id, title, user_id, book_id, rolling_threshold) VALUES (?, ?, ?, ?, ?)`,
+      [id, title, userId > 0 ? userId : null, bookId, rollingThreshold || 32768]
     );
-    res.status(201).json({ id, title, user_id: userId, book_id: bookId, created_at: new Date() });
+    res.status(201).json({ id, title, user_id: userId, book_id: bookId, rolling_threshold: rollingThreshold || 32768, created_at: new Date() });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -109,7 +113,7 @@ app.post('/api/sessions', optionalAuth, async (req, res) => {
 
 app.put('/api/sessions/:id', optionalAuth, async (req, res) => {
   try {
-    const { title, book_id } = req.body;
+    const { title, book_id, rolling_threshold, rollingThreshold } = req.body;
     const sessionId = req.params.id;
 
     // Build update query dynamically
@@ -124,6 +128,11 @@ app.put('/api/sessions/:id', optionalAuth, async (req, res) => {
       fields.push('book_id = ?');
       values.push(book_id ? parseInt(book_id, 10) : null);
     }
+    const targetThreshold = rolling_threshold !== undefined ? rolling_threshold : rollingThreshold;
+    if (targetThreshold !== undefined) {
+      fields.push('rolling_threshold = ?');
+      values.push(parseInt(targetThreshold, 10) || 32768);
+    }
 
     if (fields.length === 0) {
       return res.status(400).json({ error: 'No fields to update' });
@@ -134,7 +143,7 @@ app.put('/api/sessions/:id', optionalAuth, async (req, res) => {
     
     // Fetch updated session
     const [rows] = await pool.query(
-      `SELECT s.id, s.title, s.user_id, s.book_id, b.title as book_title, s.created_at
+      `SELECT s.id, s.title, s.user_id, s.book_id, s.rolling_threshold, b.title as book_title, s.created_at
        FROM chat_sessions s
        LEFT JOIN lore_books b ON s.book_id = b.id
        WHERE s.id = ?`,
@@ -280,7 +289,7 @@ app.post('/api/chat', optionalAuth, async (req, res) => {
     }
 
     const [sessRows] = await pool.query(
-      `SELECT s.book_id, b.title as book_title, b.system_instruction as book_instruction
+      `SELECT s.book_id, s.rolling_threshold, b.title as book_title, b.system_instruction as book_instruction
        FROM chat_sessions s
        LEFT JOIN lore_books b ON s.book_id = b.id
        WHERE s.id = ?`,
@@ -316,7 +325,10 @@ app.post('/api/chat', optionalAuth, async (req, res) => {
     }
 
     const modelLimit = getModelContextLimit(model);
-    const effectiveThreshold = Math.min(contextRollingThreshold, modelLimit - maxOutputTokens - 500);
+    const sessionThreshold = req.body.contextRollingThreshold !== undefined 
+      ? parseInt(req.body.contextRollingThreshold, 10) 
+      : (sessionBook?.rolling_threshold || 32768);
+    const effectiveThreshold = Math.min(sessionThreshold, modelLimit - maxOutputTokens - 500);
 
     const {
       prunedMessages,
@@ -430,7 +442,7 @@ app.post('/api/chat/stream', optionalAuth, async (req, res) => {
 
   try {
     const [sessRows] = await pool.query(
-      `SELECT s.book_id, b.title as book_title, b.system_instruction as book_instruction
+      `SELECT s.book_id, s.rolling_threshold, b.title as book_title, b.system_instruction as book_instruction
        FROM chat_sessions s
        LEFT JOIN lore_books b ON s.book_id = b.id
        WHERE s.id = ?`,
@@ -466,7 +478,10 @@ app.post('/api/chat/stream', optionalAuth, async (req, res) => {
     }
 
     const modelLimit = getModelContextLimit(model);
-    const effectiveThreshold = Math.min(contextRollingThreshold, modelLimit - maxOutputTokens - 500);
+    const sessionThreshold = req.body.contextRollingThreshold !== undefined 
+      ? parseInt(req.body.contextRollingThreshold, 10) 
+      : (sessionBook?.rolling_threshold || 32768);
+    const effectiveThreshold = Math.min(sessionThreshold, modelLimit - maxOutputTokens - 500);
 
     const {
       prunedMessages,
