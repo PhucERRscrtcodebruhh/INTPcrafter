@@ -11,7 +11,8 @@ import {
   LogOut,
   ShieldCheck,
   Globe,
-  ChevronDown
+  ChevronDown,
+  Sparkles
 } from 'lucide-react';
 
 const LANGUAGES = [
