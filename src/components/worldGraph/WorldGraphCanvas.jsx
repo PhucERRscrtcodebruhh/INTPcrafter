@@ -25,7 +25,11 @@ import {
   Layers, 
   Sliders, 
   Info,
-  Maximize2
+  Maximize2,
+  Minimize2,
+  Menu,
+  X,
+  ChevronDown
 } from 'lucide-react';
 
 import { CharacterNode } from './nodes/CharacterNode';
@@ -35,6 +39,7 @@ import { EventNode } from './nodes/EventNode';
 import { RelationshipEdge } from './edges/RelationshipEdge';
 import NodeInspector from './NodeInspector';
 import GraphRagExportModal from './GraphRagExportModal';
+import { api } from '../../services/api';
 
 // Node and Edge Types Mapping for React Flow
 const nodeTypes = {
@@ -170,10 +175,16 @@ const DEFAULT_SEED_EDGES = [
   }
 ];
 
-export default function WorldGraphCanvas({ activeBookId, activeBookTitle }) {
+export default function WorldGraphCanvas({ 
+  activeBookId, 
+  activeBookTitle,
+  isFocusMode = true,
+  onToggleFocus,
+  onExitFocus
+}) {
   const storageKey = `storycontainer_graph_book_${activeBookId || 'default'}`;
 
-  // Load from LocalStorage if available
+  // State
   const [nodes, setNodes, onNodesChange] = useNodesState(() => {
     try {
       const saved = localStorage.getItem(storageKey);
@@ -203,12 +214,62 @@ export default function WorldGraphCanvas({ activeBookId, activeBookTitle }) {
   // RAG Exporter Modal
   const [isExportModalOpen, setIsExportModalOpen] = useState(false);
 
-  // Auto-save to LocalStorage
+  // Mobile FAB node add menu
+  const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
+
+  // Load from MySQL server if activeBookId is provided
+  useEffect(() => {
+    let isMounted = true;
+    if (activeBookId) {
+      api.getGraphState(activeBookId).then(res => {
+        if (!isMounted) return;
+        if (res.nodes && res.nodes.length > 0) {
+          setNodes(res.nodes);
+          if (res.edges) setEdges(res.edges);
+        }
+      }).catch(err => {
+        console.warn('[Graph] Server load notice (fallback to local):', err.message);
+      });
+    }
+    return () => { isMounted = false; };
+  }, [activeBookId, setNodes, setEdges]);
+
+  // Debounced auto-save to MySQL & localStorage
   useEffect(() => {
     try {
       localStorage.setItem(storageKey, JSON.stringify({ nodes, edges }));
     } catch (e) {}
-  }, [nodes, edges, storageKey]);
+
+    const timer = setTimeout(() => {
+      if (activeBookId) {
+        api.saveGraphState(activeBookId, { nodes, edges }).catch(err => {
+          console.warn('[Graph] Server save notice:', err.message);
+        });
+      }
+    }, 1500);
+
+    return () => clearTimeout(timer);
+  }, [nodes, edges, storageKey, activeBookId]);
+
+  // Long-press timer reference for mobile touch support
+  const touchTimerRef = useRef(null);
+
+  const handleNodeTouchStart = useCallback((_, node) => {
+    touchTimerRef.current = setTimeout(() => {
+      setSelectedNodeId(node.id);
+      setSelectedEdgeId(null);
+      if (typeof navigator !== 'undefined' && navigator.vibrate) {
+        navigator.vibrate(40);
+      }
+    }, 500);
+  }, []);
+
+  const handleNodeTouchEnd = useCallback(() => {
+    if (touchTimerRef.current) {
+      clearTimeout(touchTimerRef.current);
+      touchTimerRef.current = null;
+    }
+  }, []);
 
   // Connect handler
   const onConnect = useCallback((connection) => {
@@ -243,6 +304,7 @@ export default function WorldGraphCanvas({ activeBookId, activeBookTitle }) {
   const onPaneClick = useCallback(() => {
     setSelectedNodeId(null);
     setSelectedEdgeId(null);
+    setMobileMenuOpen(false);
   }, []);
 
   // Create new Node dynamically
@@ -297,6 +359,7 @@ export default function WorldGraphCanvas({ activeBookId, activeBookTitle }) {
     setNodes((nds) => [...nds, newNode]);
     setSelectedNodeId(id);
     setSelectedEdgeId(null);
+    setMobileMenuOpen(false);
   };
 
   // Update Node Data
@@ -340,22 +403,24 @@ export default function WorldGraphCanvas({ activeBookId, activeBookTitle }) {
   const selectedEdge = useMemo(() => edges.find(e => e.id === selectedEdgeId) || null, [edges, selectedEdgeId]);
 
   return (
-    <div className="flex-1 flex flex-col h-full bg-cyber-950 overflow-hidden relative select-none">
+    <div className={`flex-1 flex flex-col bg-cyber-950 overflow-hidden relative select-none ${
+      isFocusMode ? 'fixed inset-0 z-50 h-screen w-screen' : 'h-full'
+    }`}>
       {/* Top Action Toolbar */}
-      <div className="p-3 bg-cyber-900 border-b border-cyan-500/20 flex flex-wrap items-center justify-between gap-2 z-10">
-        {/* Left: World / Canvas Title & Node Creators */}
+      <div className="p-2 sm:p-3 bg-cyber-900 border-b border-cyan-500/20 flex flex-wrap items-center justify-between gap-2 z-10">
+        {/* Left: World / Canvas Title & Desktop Node Creators */}
         <div className="flex flex-wrap items-center gap-2">
-          <div className="flex items-center space-x-2 mr-2">
-            <Network size={16} className="text-cyan-400" />
-            <span className="text-xs font-bold uppercase tracking-wider text-slate-200 font-mono">
-              World Graph // {activeBookTitle || 'Active World'}
+          <div className="flex items-center space-x-2 mr-1">
+            <Network size={16} className="text-cyan-400 flex-shrink-0" />
+            <span className="text-xs font-bold uppercase tracking-wider text-slate-200 font-mono truncate max-w-[150px] sm:max-w-none">
+              {activeBookTitle || 'World Graph'}
             </span>
           </div>
 
-          <div className="h-4 w-px bg-slate-700 hidden sm:block" />
+          <div className="h-4 w-px bg-slate-700 hidden md:block" />
 
-          {/* Node Creation Buttons */}
-          <div className="flex items-center space-x-1.5">
+          {/* Desktop Node Creation Buttons */}
+          <div className="hidden md:flex items-center space-x-1.5">
             <button
               onClick={() => handleAddNode('character')}
               className="px-2.5 py-1 rounded bg-cyan-950/80 border border-cyan-500/40 text-cyan-300 hover:bg-cyan-900 text-xs font-mono flex items-center space-x-1 transition-all"
@@ -394,11 +459,25 @@ export default function WorldGraphCanvas({ activeBookId, activeBookTitle }) {
           </div>
         </div>
 
-        {/* Right: RAG Exporter & Reset Actions */}
-        <div className="flex items-center space-x-2">
+        {/* Right: Actions, Focus Mode Toggle & RAG Exporter */}
+        <div className="flex items-center space-x-1.5 sm:space-x-2">
+          {/* Focus Mode Toggle Button */}
+          <button
+            onClick={onToggleFocus}
+            className={`px-2.5 py-1.5 rounded text-xs font-mono flex items-center space-x-1 transition-all border ${
+              isFocusMode
+                ? 'bg-cyan-950 border-cyan-400/60 text-cyan-300 shadow-glow-cyan-sm font-semibold'
+                : 'bg-cyber-850 hover:bg-cyber-800 border-slate-700 text-slate-400'
+            }`}
+            title={isFocusMode ? 'Exit Fullscreen Focus (Restore Navigation)' : 'Enter 100vh Focus Mode'}
+          >
+            {isFocusMode ? <Minimize2 size={13} /> : <Maximize2 size={13} />}
+            <span className="hidden sm:inline">{isFocusMode ? 'Exit Focus' : 'Focus Mode'}</span>
+          </button>
+
           <button
             onClick={handleResetTemplate}
-            className="p-1.5 rounded bg-cyber-850 hover:bg-cyber-800 border border-slate-700 text-slate-400 hover:text-slate-200 text-xs"
+            className="p-1.5 rounded bg-cyber-850 hover:bg-cyber-800 border border-slate-700 text-slate-400 hover:text-slate-200 text-xs min-w-[36px] min-h-[36px] flex items-center justify-center"
             title="Reset Canvas Template"
           >
             <RotateCcw size={13} />
@@ -406,17 +485,18 @@ export default function WorldGraphCanvas({ activeBookId, activeBookTitle }) {
 
           <button
             onClick={() => setIsExportModalOpen(true)}
-            className="px-3 py-1.5 rounded bg-cyan-400 hover:bg-cyan-300 text-black font-bold text-xs font-mono flex items-center space-x-1.5 shadow-glow-cyan-sm transition-all"
+            className="px-3 py-1.5 rounded bg-cyan-400 hover:bg-cyan-300 text-black font-bold text-xs font-mono flex items-center space-x-1.5 shadow-glow-cyan-sm transition-all min-h-[36px]"
           >
             <Sparkles size={13} />
-            <span>Export Graph RAG Context</span>
+            <span className="hidden sm:inline">Export Graph RAG Context</span>
+            <span className="sm:hidden">RAG</span>
           </button>
         </div>
       </div>
 
       {/* Main Canvas & Inspector Area */}
       <div className="flex-1 flex overflow-hidden relative">
-        {/* React Flow Visual Canvas */}
+        {/* React Flow Visual Canvas with Full Touch & Pinch-to-Zoom Support */}
         <div className="flex-1 h-full relative">
           <ReactFlow
             nodes={nodes}
@@ -429,11 +509,30 @@ export default function WorldGraphCanvas({ activeBookId, activeBookTitle }) {
             onNodeClick={onNodeClick}
             onEdgeClick={onEdgeClick}
             onPaneClick={onPaneClick}
+            onNodeContextMenu={(e, node) => {
+              e.preventDefault();
+              setSelectedNodeId(node.id);
+              setSelectedEdgeId(null);
+            }}
+            onTouchStart={(e) => {
+              const nodeElement = e.target.closest('.react-flow__node');
+              if (nodeElement) {
+                const nodeId = nodeElement.getAttribute('data-id');
+                const matchedNode = nodes.find(n => n.id === nodeId);
+                if (matchedNode) handleNodeTouchStart(e, matchedNode);
+              }
+            }}
+            onTouchEnd={handleNodeTouchEnd}
             fitView
+            panOnDrag={true}
+            zoomOnPinch={true}
+            zoomOnScroll={true}
+            touchZoomRotate={true}
+            preventScrolling={false}
             className="bg-cyber-950"
           >
             <Background color="#06b6d4" gap={20} size={1} opacity={0.12} />
-            <Controls className="!bg-cyber-900 !border-slate-800 !text-slate-200 fill-slate-200" />
+            <Controls className="!bg-cyber-900 !border-slate-800 !text-slate-200 fill-slate-200 !bottom-16 sm:!bottom-4" />
             <MiniMap
               nodeColor={(n) => {
                 if (n.type === 'character') return '#06b6d4';
@@ -441,7 +540,7 @@ export default function WorldGraphCanvas({ activeBookId, activeBookTitle }) {
                 if (n.type === 'location') return '#10b981';
                 return '#f59e0b';
               }}
-              className="!bg-cyber-950/90 !border-cyan-500/20"
+              className="!bg-cyber-950/90 !border-cyan-500/20 hidden sm:block"
               maskColor="rgba(0,0,0,0.7)"
             />
           </ReactFlow>
@@ -450,12 +549,57 @@ export default function WorldGraphCanvas({ activeBookId, activeBookTitle }) {
           <div className="absolute bottom-4 left-4 bg-cyber-950/90 border border-slate-800 rounded-lg p-2.5 text-[11px] text-slate-400 font-mono shadow-xl hidden md:block pointer-events-none z-10">
             <span className="text-cyan-400 font-bold block mb-0.5">Interaction Guide:</span>
             <span>• Drag dots to connect nodes with relationships.</span><br />
-            <span>• Click any node/edge to open the polymorphic inspector.</span><br />
-            <span>• Click "Export Graph RAG Context" to inject graph paths into LLM.</span>
+            <span>• Click or long-press any node/edge to open inspector.</span><br />
+            <span>• Full touch gestures enabled: Pinch to zoom, drag to pan.</span>
+          </div>
+
+          {/* Mobile Floating Action Button (FAB) for Node Creation */}
+          <div className="md:hidden absolute bottom-5 right-5 z-20">
+            {mobileMenuOpen && (
+              <div className="mb-2 bg-cyber-950/95 border border-cyan-500/40 rounded-xl p-2 shadow-2xl space-y-1.5 animate-fadeIn">
+                <button
+                  onClick={() => handleAddNode('character')}
+                  className="w-full min-h-[44px] px-3 rounded bg-cyan-950/80 border border-cyan-500/40 text-cyan-300 text-xs font-mono flex items-center space-x-2"
+                >
+                  <User size={14} />
+                  <span>+ Character Node</span>
+                </button>
+                <button
+                  onClick={() => handleAddNode('system')}
+                  className="w-full min-h-[44px] px-3 rounded bg-purple-950/80 border border-purple-500/40 text-purple-300 text-xs font-mono flex items-center space-x-2"
+                >
+                  <Zap size={14} />
+                  <span>+ Magic/Tech System</span>
+                </button>
+                <button
+                  onClick={() => handleAddNode('location')}
+                  className="w-full min-h-[44px] px-3 rounded bg-emerald-950/80 border border-emerald-500/40 text-emerald-300 text-xs font-mono flex items-center space-x-2"
+                >
+                  <MapPin size={14} />
+                  <span>+ Location Node</span>
+                </button>
+                <button
+                  onClick={() => handleAddNode('event')}
+                  className="w-full min-h-[44px] px-3 rounded bg-amber-950/80 border border-amber-500/40 text-amber-300 text-xs font-mono flex items-center space-x-2"
+                >
+                  <Clock size={14} />
+                  <span>+ Event Node</span>
+                </button>
+              </div>
+            )}
+
+            <button
+              onClick={() => setMobileMenuOpen(!mobileMenuOpen)}
+              className="w-12 h-12 rounded-full bg-cyan-400 text-black flex items-center justify-center shadow-glow-cyan font-bold transition-transform active:scale-95"
+              title="Add Node (Mobile FAB)"
+              aria-label="Add Node"
+            >
+              {mobileMenuOpen ? <X size={22} /> : <Plus size={24} />}
+            </button>
           </div>
         </div>
 
-        {/* Dynamic Node / Edge Inspector Drawer */}
+        {/* Dynamic Node / Edge Inspector Drawer (Bottom Sheet on Mobile) */}
         <NodeInspector
           selectedNode={selectedNode}
           selectedEdge={selectedEdge}

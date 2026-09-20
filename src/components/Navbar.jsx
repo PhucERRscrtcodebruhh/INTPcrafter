@@ -33,7 +33,9 @@ export default function Navbar({
   onOpenLogin,
   onLogout,
   language = 'vi',
-  onLanguageChange
+  onLanguageChange,
+  isZenMode = false,
+  onToggleZenMode
 }) {
   const activeKeysCount = keyStats.filter(k => k.status === 'active').length;
   const rateLimitedCount = keyStats.filter(k => k.status === 'rate_limited').length;
@@ -54,60 +56,69 @@ export default function Navbar({
   const currentLang = LANGUAGES.find(l => l.code === language) || LANGUAGES[0];
 
   return (
-    <header className="h-14 border-b border-cyan-500/20 bg-cyber-900/90 backdrop-blur-md px-4 flex items-center justify-between select-none z-30">
+    <header className="h-9 sm:h-9 border-b border-cyan-500/20 bg-cyber-900/95 backdrop-blur-md px-3 flex items-center justify-between select-none z-30 transition-all font-mono">
       {/* Left branding */}
-      <div className="flex items-center space-x-3">
-        <div className="w-8 h-8 rounded bg-cyan-950/80 border border-cyan-500/40 flex items-center justify-center text-cyan-400 shadow-glow-cyan-sm">
-          <Terminal size={18} />
+      <div className="flex items-center space-x-2">
+        <div className="w-5 h-5 rounded bg-cyan-950/80 border border-cyan-500/40 flex items-center justify-center text-cyan-400 shadow-glow-cyan-sm">
+          <Terminal size={12} />
         </div>
-        <div>
-          <div className="flex items-center space-x-2">
-            <span className="text-sm font-bold tracking-wider text-slate-100 uppercase">
-              StoryContainer
-            </span>
-            <span className="text-[10px] px-1.5 py-0.5 rounded bg-cyan-950 border border-cyan-500/30 text-cyan-400 font-semibold tracking-wider">
-              INTP ENGINE
-            </span>
-          </div>
-          <p className="text-[10px] text-slate-400 font-mono tracking-tight hidden sm:block">
-            Deterministic World Simulator & Novel Architecture
-          </p>
+        <div className="flex items-center space-x-1.5">
+          <span className="text-xs font-bold tracking-wider text-slate-100 uppercase">
+            StoryContainer
+          </span>
+          <span className="text-[9px] px-1 py-0.2 rounded bg-cyan-950 border border-cyan-500/30 text-cyan-400 font-semibold tracking-wider">
+            INTP
+          </span>
         </div>
       </div>
 
       {/* Center: Mode Switcher */}
-      <div className="flex items-center bg-cyber-950 p-1 rounded-lg border border-slate-800">
+      <div className="flex items-center bg-cyber-950 p-0.5 rounded-lg border border-slate-800 text-[11px]">
         <button
           onClick={() => onToggleView('studio')}
-          className={`flex items-center space-x-2 px-3 py-1.5 rounded text-xs font-medium transition-all ${
+          className={`flex items-center space-x-1 px-2.5 py-0.5 rounded font-medium transition-all ${
             currentView === 'studio'
               ? 'bg-cyan-500/20 text-cyan-300 border border-cyan-500/40 shadow-glow-cyan-sm'
               : 'text-slate-400 hover:text-slate-200'
           }`}
         >
-          <Terminal size={14} />
-          <span>AI Studio Canvas</span>
+          <Terminal size={12} />
+          <span>Studio</span>
         </button>
 
         <button
           onClick={() => onToggleView('lorebook')}
-          className={`flex items-center space-x-2 px-3 py-1.5 rounded text-xs font-medium transition-all ${
+          className={`flex items-center space-x-1 px-2.5 py-0.5 rounded font-medium transition-all ${
             currentView === 'lorebook'
               ? 'bg-cyan-500/20 text-cyan-300 border border-cyan-500/40 shadow-glow-cyan-sm'
               : 'text-slate-400 hover:text-slate-200'
           }`}
         >
-          <Database size={14} />
-          <span>World Config & Lorebook</span>
+          <Database size={12} />
+          <span>Lorebook</span>
         </button>
 
-        <span className="ml-2 mr-1 px-1.5 py-0.5 text-[10px] text-slate-500 border border-slate-800 rounded bg-cyber-900 flex items-center">
+        <span className="ml-1.5 px-1 py-0.2 text-[9px] text-slate-500 border border-slate-800 rounded bg-cyber-900 hidden sm:inline-flex items-center">
           Ctrl+K
         </span>
       </div>
 
       {/* Right controls & status */}
-      <div className="flex items-center space-x-3 text-xs">
+      <div className="flex items-center space-x-2 text-xs">
+        {/* Zen Mode Toggle Button */}
+        <button
+          onClick={onToggleZenMode}
+          title="Toggle Zen Mode (Ctrl+\\)"
+          className={`flex items-center space-x-1 px-2 py-0.5 rounded text-[11px] font-mono border transition-all ${
+            isZenMode
+              ? 'bg-purple-950 border-purple-400/60 text-purple-300 shadow-glow-cyan-sm'
+              : 'bg-cyber-950 border-slate-800 text-slate-400 hover:text-cyan-300 hover:border-cyan-500/40'
+          }`}
+        >
+          <Sparkles size={11} className={isZenMode ? 'text-purple-400' : 'text-slate-400'} />
+          <span className="hidden sm:inline">Zen</span>
+          <span className="text-[9px] text-slate-500 hidden md:inline">Ctrl+\</span>
+        </button>
         {/* Language Selector */}
         <div className="relative" ref={langRef}>
           <button

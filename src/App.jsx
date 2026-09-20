@@ -111,6 +111,9 @@ export default function App() {
     }
   };
 
+  // Zen Mode (Ctrl + \) — Hides sidebars, topbars, and borders for pure writing canvas
+  const [isZenMode, setIsZenMode] = useState(false);
+
   // Load Initial Data
   useEffect(() => {
     loadSessions();
@@ -133,11 +136,14 @@ export default function App() {
     };
     window.addEventListener('auth:logout', handleAuthLogout);
 
-    // Hotkey listener for Ctrl+K or Cmd+K
+    // Hotkey listener for Ctrl+K (mode switch) and Ctrl+\ (Zen Mode)
     const handleKeyDown = (e) => {
       if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'k') {
         e.preventDefault();
         setCurrentView(prev => (prev === 'studio' ? 'lorebook' : 'studio'));
+      } else if ((e.ctrlKey || e.metaKey) && (e.key === '\\' || e.code === 'Backslash')) {
+        e.preventDefault();
+        setIsZenMode(prev => !prev);
       }
     };
     window.addEventListener('keydown', handleKeyDown);
@@ -506,21 +512,41 @@ export default function App() {
 
   return (
     <div className="h-screen w-screen flex flex-col bg-cyber-950 text-slate-200 overflow-hidden select-none font-mono">
-      {/* Top Navbar */}
-      <Navbar
-        currentView={currentView}
-        onToggleView={(view) => setCurrentView(view)}
-        activeModel={model}
-        keyStats={keyStats}
-        loreDrawerOpen={loreDrawerOpen}
-        onToggleLoreDrawer={() => setLoreDrawerOpen(!loreDrawerOpen)}
-        retrievedCount={retrievedLore.length}
-        currentUser={currentUser}
-        onOpenLogin={() => setIsLoginModalOpen(true)}
-        onLogout={handleLogout}
-        language={language}
-        onLanguageChange={handleLanguageChange}
-      />
+      {/* Top Navbar (Hidden in Zen Mode) */}
+      {!isZenMode && (
+        <Navbar
+          currentView={currentView}
+          onToggleView={(view) => setCurrentView(view)}
+          activeModel={model}
+          keyStats={keyStats}
+          loreDrawerOpen={loreDrawerOpen}
+          onToggleLoreDrawer={() => setLoreDrawerOpen(!loreDrawerOpen)}
+          retrievedCount={retrievedLore.length}
+          currentUser={currentUser}
+          onOpenLogin={() => setIsLoginModalOpen(true)}
+          onLogout={handleLogout}
+          language={language}
+          onLanguageChange={handleLanguageChange}
+          isZenMode={isZenMode}
+          onToggleZenMode={() => setIsZenMode(!isZenMode)}
+        />
+      )}
+
+      {/* Floating Zen Mode Indicator when active */}
+      {isZenMode && (
+        <div className="fixed top-2 right-4 z-50 flex items-center space-x-2 bg-cyber-950/90 border border-purple-500/40 px-3 py-1 rounded-full text-xs text-purple-300 backdrop-blur-md shadow-glow-cyan-sm animate-fadeIn">
+          <span className="w-2 h-2 rounded-full bg-purple-400 animate-pulse" />
+          <span className="font-semibold">Zen Mode</span>
+          <span className="text-[10px] text-slate-400 font-mono hidden sm:inline">(Ctrl+\)</span>
+          <button 
+            onClick={() => setIsZenMode(false)}
+            className="hover:text-white p-0.5 ml-1 text-slate-400"
+            title="Exit Zen Mode"
+          >
+            ✕
+          </button>
+        </div>
+      )}
 
       {/* Error Alert Banner */}
       {errorMessage && (
@@ -579,6 +605,7 @@ export default function App() {
             books={books}
             activeBookId={linkedBookId}
             onLinkBook={handleLinkBookToSession}
+            isZenMode={isZenMode}
           />
         ) : (
           <LorebookDashboard

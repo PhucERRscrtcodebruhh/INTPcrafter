@@ -199,6 +199,13 @@ export const api = {
     method: 'DELETE',
   }),
 
+  // Graph State & Canvas Persistence
+  getGraphState: (worldId) => request(`/graph/${worldId}`),
+  saveGraphState: (worldId, graphData) => request(`/graph/${worldId}`, {
+    method: 'POST',
+    body: JSON.stringify(graphData),
+  }),
+
   // API Key Pool
   getKeys: () => request('/keys'),
   updateKeys: (keys) => request('/keys', {

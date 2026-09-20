@@ -48,7 +48,7 @@ export default function ControlBar({
   const currentInputTokens = estimateTokens(prompt);
 
   return (
-    <div className="border-t border-cyan-500/20 bg-cyber-900/90 backdrop-blur-md p-3 select-none z-20">
+    <div className="border-t border-cyan-500/20 bg-cyber-900/95 backdrop-blur-md p-2 sm:p-2.5 select-none z-20">
       {/* Parameter Adjustment Drawer (Collapsible) */}
       {showParams && (
         <div className="mb-3 p-3 rounded-lg glass-panel-subtle border border-cyan-500/20 grid grid-cols-1 sm:grid-cols-3 gap-4 text-xs animate-fadeIn">
@@ -204,14 +204,14 @@ export default function ControlBar({
             onKeyDown={handleKeyDown}
             disabled={isLoading}
             placeholder="Direct the world simulation, describe character actions, or formulate story directives..."
-            className="w-full bg-transparent px-3 py-2.5 text-xs text-slate-100 placeholder-slate-600 resize-none focus:outline-none leading-relaxed max-h-48"
+            className="w-full bg-transparent px-2.5 py-1.5 sm:py-2 text-xs text-slate-100 placeholder-slate-600 resize-none focus:outline-none leading-relaxed max-h-48"
           />
 
-          <div className="p-2 shrink-0">
+          <div className="p-1 sm:p-1.5 shrink-0">
             <button
               onClick={onSend}
               disabled={isLoading || !prompt.trim()}
-              className={`flex items-center space-x-1.5 px-3 py-1.5 rounded text-xs font-semibold transition-all ${
+              className={`flex items-center space-x-1 px-2.5 py-1 sm:py-1.5 rounded text-xs font-semibold transition-all ${
                 isLoading || !prompt.trim()
                   ? 'bg-slate-800 text-slate-500 cursor-not-allowed border border-slate-700/50'
                   : 'bg-cyan-400 hover:bg-cyan-300 text-black shadow-glow-cyan-sm cursor-pointer'

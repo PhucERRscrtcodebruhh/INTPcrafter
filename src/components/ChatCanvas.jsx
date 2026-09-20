@@ -42,7 +42,8 @@ export default function ChatCanvas({
   onRegenerateMessage,
   books = [],
   activeBookId = null,
-  onLinkBook
+  onLinkBook,
+  isZenMode = false
 }) {
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [activeLoreInDrawer, setActiveLoreInDrawer] = useState(retrievedLore);
@@ -59,20 +60,22 @@ export default function ChatCanvas({
 
   return (
     <div className="flex-1 flex h-full overflow-hidden relative">
-      {/* Left Session Sidebar */}
-      <SessionSidebar
-        sessions={sessions}
-        activeSessionId={activeSessionId}
-        onSelectSession={onSelectSession}
-        onCreateSession={onCreateSession}
-        onRenameSession={onRenameSession}
-        onDeleteSession={onDeleteSession}
-        isCollapsed={sidebarCollapsed}
-        onToggleCollapse={() => setSidebarCollapsed(!sidebarCollapsed)}
-      />
+      {/* Left Session Sidebar (Hidden in Zen Mode) */}
+      {!isZenMode && (
+        <SessionSidebar
+          sessions={sessions}
+          activeSessionId={activeSessionId}
+          onSelectSession={onSelectSession}
+          onCreateSession={onCreateSession}
+          onRenameSession={onRenameSession}
+          onDeleteSession={onDeleteSession}
+          isCollapsed={sidebarCollapsed}
+          onToggleCollapse={() => setSidebarCollapsed(!sidebarCollapsed)}
+        />
+      )}
 
       {/* Main Studio Canvas Area */}
-      <div className="flex-1 flex flex-col h-full overflow-hidden bg-cyber-950">
+      <div className={`flex-1 flex flex-col h-full overflow-hidden bg-cyber-950 ${isZenMode ? 'w-full max-w-5xl mx-auto' : ''}`}>
         {/* Token Counter & Context Window Rolling Bar */}
         <ContextBar
           currentTokens={currentTokens}

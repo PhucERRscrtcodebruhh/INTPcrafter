@@ -657,22 +657,27 @@ app.get('/api/books/:id/entries', async (req, res) => {
   try {
     const bookId = parseInt(req.params.id, 10);
     const { category, search } = req.query;
-    let sql = `SELECT id, book_id, category, title, aliases, rules, content, created_at FROM lore_entries WHERE book_id = ?`;
-    const params = [bookId];
+    let sql = `SELECT id, book_id, world_id, category, title, aliases, rules, content, metadata, created_at, updated_at FROM lore_entries WHERE (book_id = ? OR world_id = ?)`;
+    const params = [bookId, String(bookId)];
 
     if (category && category !== 'All') {
       sql += ` AND category = ?`;
       params.push(category);
     }
     if (search && search.trim()) {
-      sql += ` AND (title LIKE ? OR aliases LIKE ? OR content LIKE ?)`;
+      sql += ` AND (title LIKE ? OR aliases LIKE ? OR content LIKE ? OR rules LIKE ?)`;
       const term = `%${search.trim()}%`;
-      params.push(term, term, term);
+      params.push(term, term, term, term);
     }
 
     sql += ` ORDER BY title ASC`;
     const [rows] = await pool.query(sql, params);
-    res.json(rows);
+    const processed = rows.map(r => ({
+      ...r,
+      canonicalLore: r.content || '',
+      metadata: typeof r.metadata === 'string' ? JSON.parse(r.metadata || '{}') : (r.metadata || {})
+    }));
+    res.json(processed);
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -684,27 +689,33 @@ app.get('/api/books/:id/entries', async (req, res) => {
 
 app.get('/api/lore', async (req, res) => {
   try {
-    const { category, search, book_id } = req.query;
-    let sql = `SELECT id, book_id, category, title, aliases, rules, content, created_at FROM lore_entries WHERE 1=1`;
+    const { category, search, book_id, worldId } = req.query;
+    let sql = `SELECT id, book_id, world_id, category, title, aliases, rules, content, metadata, created_at, updated_at FROM lore_entries WHERE 1=1`;
     const params = [];
 
-    if (book_id) {
-      sql += ` AND book_id = ?`;
-      params.push(parseInt(book_id, 10));
+    const targetWorld = worldId || book_id;
+    if (targetWorld) {
+      sql += ` AND (book_id = ? OR world_id = ?)`;
+      params.push(parseInt(targetWorld, 10) || targetWorld, String(targetWorld));
     }
     if (category && category !== 'All') {
       sql += ` AND category = ?`;
       params.push(category);
     }
     if (search && search.trim()) {
-      sql += ` AND (title LIKE ? OR aliases LIKE ? OR content LIKE ?)`;
+      sql += ` AND (title LIKE ? OR aliases LIKE ? OR content LIKE ? OR rules LIKE ?)`;
       const term = `%${search.trim()}%`;
-      params.push(term, term, term);
+      params.push(term, term, term, term);
     }
 
     sql += ` ORDER BY title ASC`;
     const [rows] = await pool.query(sql, params);
-    res.json(rows);
+    const processed = rows.map(r => ({
+      ...r,
+      canonicalLore: r.content || '',
+      metadata: typeof r.metadata === 'string' ? JSON.parse(r.metadata || '{}') : (r.metadata || {})
+    }));
+    res.json(processed);
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -712,31 +723,49 @@ app.get('/api/lore', async (req, res) => {
 
 app.post('/api/lore', async (req, res) => {
   try {
-    const { category = 'General', title, aliases = '', rules = '', content = '', book_id } = req.body;
+    const { 
+      category = 'General', 
+      title, 
+      aliases = '', 
+      rules = '', 
+      content = '', 
+      canonicalLore = '', 
+      metadata = {}, 
+      book_id,
+      worldId
+    } = req.body;
+
     if (!title?.trim()) {
       return res.status(400).json({ error: 'Title is required' });
     }
 
-    // Resolve target book_id (use provided, or fallback to first available book)
-    let targetBookId = book_id ? parseInt(book_id, 10) : null;
-    if (!targetBookId) {
+    const targetWorldId = worldId || (book_id ? String(book_id) : null);
+    let targetBookId = book_id ? parseInt(book_id, 10) : (targetWorldId ? parseInt(targetWorldId, 10) : null);
+    if (!targetBookId && !targetWorldId) {
       const [firstBook] = await pool.query(`SELECT id FROM lore_books ORDER BY id ASC LIMIT 1`);
       targetBookId = firstBook[0]?.id || null;
     }
 
+    const finalContent = (canonicalLore || content || '').trim();
+    const metadataStr = typeof metadata === 'object' ? JSON.stringify(metadata) : (metadata || '{}');
+    const aliasesStr = Array.isArray(aliases) ? JSON.stringify(aliases) : String(aliases).trim();
+
     const [result] = await pool.query(
-      `INSERT INTO lore_entries (book_id, category, title, aliases, rules, content) VALUES (?, ?, ?, ?, ?, ?)`,
-      [targetBookId, category.trim(), title.trim(), aliases.trim(), rules.trim(), content.trim()]
+      `INSERT INTO lore_entries (book_id, world_id, category, title, aliases, rules, content, metadata) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+      [targetBookId, targetWorldId || (targetBookId ? String(targetBookId) : null), category.trim(), title.trim(), aliasesStr, rules.trim(), finalContent, metadataStr]
     );
 
     res.status(201).json({
       id: result.insertId,
       book_id: targetBookId,
+      world_id: targetWorldId || (targetBookId ? String(targetBookId) : null),
       category,
       title: title.trim(),
-      aliases: aliases.trim(),
+      aliases: aliasesStr,
       rules: rules.trim(),
-      content: content.trim()
+      content: finalContent,
+      canonicalLore: finalContent,
+      metadata: typeof metadata === 'string' ? JSON.parse(metadataStr) : metadata
     });
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -746,24 +775,66 @@ app.post('/api/lore', async (req, res) => {
 app.put('/api/lore/:id', async (req, res) => {
   try {
     const id = req.params.id;
-    const { category, title, aliases, rules, content, book_id } = req.body;
+    const { 
+      category, 
+      title, 
+      aliases, 
+      rules, 
+      content, 
+      canonicalLore, 
+      metadata, 
+      book_id,
+      worldId
+    } = req.body;
+
     if (!title?.trim()) {
       return res.status(400).json({ error: 'Title is required' });
     }
 
-    if (book_id !== undefined) {
-      await pool.query(
-        `UPDATE lore_entries SET category = ?, title = ?, aliases = ?, rules = ?, content = ?, book_id = ? WHERE id = ?`,
-        [category.trim(), title.trim(), aliases?.trim() || '', rules?.trim() || '', content?.trim() || '', parseInt(book_id, 10), id]
-      );
-    } else {
-      await pool.query(
-        `UPDATE lore_entries SET category = ?, title = ?, aliases = ?, rules = ?, content = ? WHERE id = ?`,
-        [category.trim(), title.trim(), aliases?.trim() || '', rules?.trim() || '', content?.trim() || '', id]
-      );
+    const finalContent = canonicalLore !== undefined ? canonicalLore : content;
+    const metadataStr = metadata !== undefined 
+      ? (typeof metadata === 'object' ? JSON.stringify(metadata) : String(metadata))
+      : null;
+    const aliasesStr = aliases !== undefined
+      ? (Array.isArray(aliases) ? JSON.stringify(aliases) : String(aliases).trim())
+      : null;
+
+    const targetWorldId = worldId || (book_id ? String(book_id) : null);
+    const targetBookId = book_id ? parseInt(book_id, 10) : (targetWorldId ? parseInt(targetWorldId, 10) : null);
+
+    const [existing] = await pool.query(`SELECT * FROM lore_entries WHERE id = ?`, [id]);
+    if (existing.length === 0) {
+      return res.status(404).json({ error: 'Lore entry not found' });
     }
 
-    res.json({ id: parseInt(id, 10), book_id, category, title, aliases, rules, content });
+    const updatedCategory = category !== undefined ? category.trim() : existing[0].category;
+    const updatedTitle = title !== undefined ? title.trim() : existing[0].title;
+    const updatedAliases = aliasesStr !== null ? aliasesStr : existing[0].aliases;
+    const updatedRules = rules !== undefined ? rules.trim() : existing[0].rules;
+    const updatedContent = finalContent !== undefined ? finalContent.trim() : existing[0].content;
+    const updatedMetadata = metadataStr !== null ? metadataStr : (existing[0].metadata || '{}');
+    const updatedBookId = targetBookId !== null ? targetBookId : existing[0].book_id;
+    const updatedWorldId = targetWorldId !== null ? targetWorldId : existing[0].world_id;
+
+    await pool.query(
+      `UPDATE lore_entries 
+       SET category = ?, title = ?, aliases = ?, rules = ?, content = ?, metadata = ?, book_id = ?, world_id = ? 
+       WHERE id = ?`,
+      [updatedCategory, updatedTitle, updatedAliases, updatedRules, updatedContent, updatedMetadata, updatedBookId, updatedWorldId, id]
+    );
+
+    res.json({
+      id: parseInt(id, 10),
+      book_id: updatedBookId,
+      world_id: updatedWorldId,
+      category: updatedCategory,
+      title: updatedTitle,
+      aliases: updatedAliases,
+      rules: updatedRules,
+      content: updatedContent,
+      canonicalLore: updatedContent,
+      metadata: JSON.parse(updatedMetadata || '{}')
+    });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -774,6 +845,91 @@ app.delete('/api/lore/:id', async (req, res) => {
     const id = req.params.id;
     await pool.query(`DELETE FROM lore_entries WHERE id = ?`, [id]);
     res.json({ success: true, deletedId: id });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ==========================================
+// GRAPH STATE & CANVAS CONNECTIONS API
+// ==========================================
+
+app.get('/api/graph/:worldId', async (req, res) => {
+  try {
+    const worldId = String(req.params.worldId);
+    const [rows] = await pool.query(
+      `SELECT id, world_id, nodes, edges, updated_at FROM graph_states WHERE world_id = ? LIMIT 1`,
+      [worldId]
+    );
+
+    if (rows.length === 0) {
+      return res.json({
+        worldId,
+        nodes: [],
+        edges: [],
+        isDefault: true
+      });
+    }
+
+    const row = rows[0];
+    const nodes = typeof row.nodes === 'string' ? JSON.parse(row.nodes || '[]') : (row.nodes || []);
+    const edges = typeof row.edges === 'string' ? JSON.parse(row.edges || '[]') : (row.edges || []);
+
+    res.json({
+      id: row.id,
+      worldId: row.world_id,
+      nodes,
+      edges,
+      updatedAt: row.updated_at
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post('/api/graph/:worldId', async (req, res) => {
+  try {
+    const worldId = String(req.params.worldId);
+    const { nodes = [], edges = [] } = req.body;
+
+    const nodesJson = JSON.stringify(nodes);
+    const edgesJson = JSON.stringify(edges);
+    const graphId = `graph_${worldId}`;
+
+    await pool.query(
+      `INSERT INTO graph_states (id, world_id, nodes, edges) 
+       VALUES (?, ?, ?, ?)
+       ON DUPLICATE KEY UPDATE nodes = ?, edges = ?, updated_at = CURRENT_TIMESTAMP`,
+      [graphId, worldId, nodesJson, edgesJson, nodesJson, edgesJson]
+    );
+
+    // Sync individual wiring into node_connections table
+    try {
+      await pool.query(`DELETE FROM node_connections WHERE world_id = ?`, [worldId]);
+      if (Array.isArray(edges) && edges.length > 0) {
+        for (const e of edges) {
+          const edgeId = e.id || `e_${e.source}_${e.target}_${Date.now()}`;
+          const edgeType = e.type || e.data?.relationshipType || 'relationship';
+          const label = e.label || e.data?.label || '';
+          const dataJson = JSON.stringify(e.data || {});
+          await pool.query(
+            `INSERT INTO node_connections (id, world_id, source_node_id, target_node_id, edge_type, label, data)
+             VALUES (?, ?, ?, ?, ?, ?, ?)`,
+            [edgeId, worldId, e.source, e.target, edgeType, label, dataJson]
+          );
+        }
+      }
+    } catch (connErr) {
+      console.warn('[Graph DB Sync Warning]:', connErr.message);
+    }
+
+    res.json({
+      success: true,
+      worldId,
+      nodesCount: nodes.length,
+      edgesCount: edges.length,
+      updatedAt: new Date()
+    });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }

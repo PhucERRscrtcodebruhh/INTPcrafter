@@ -45,8 +45,9 @@ export default function LorebookDashboard({ onBackToStudio, books: externalBooks
   const [activeBookId, setActiveBookId] = useState(externalActiveBookId || null);
   const [isLoadingBooks, setIsLoadingBooks] = useState(false);
 
-  // Level 2 Dedicated Tab: 'lore' | 'rules' | 'instruction'
+  // Level 2 Dedicated Tab: 'lore' | 'rules' | 'instruction' | 'graph'
   const [worldWorkspaceTab, setWorldWorkspaceTab] = useState('lore');
+  const [isGraphFocusMode, setIsGraphFocusMode] = useState(true);
 
   // Book Modal (Create / Edit)
   const [isBookModalOpen, setIsBookModalOpen] = useState(false);
@@ -449,6 +450,9 @@ export default function LorebookDashboard({ onBackToStudio, books: externalBooks
                     <WorldGraphCanvas
                       activeBookId={activeBook.id}
                       activeBookTitle={activeBook.title}
+                      isFocusMode={isGraphFocusMode}
+                      onToggleFocus={() => setIsGraphFocusMode(!isGraphFocusMode)}
+                      onExitFocus={() => setIsGraphFocusMode(false)}
                     />
                   )}
                   {worldWorkspaceTab === 'instruction' && (

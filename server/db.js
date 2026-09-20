@@ -305,6 +305,78 @@ export async function initDatabase() {
       console.warn('[DB] lore_entries.book_id notice:', loreColErr.message);
     }
 
+    // 11b. Add metadata JSON column and world_id VARCHAR(255) to lore_entries
+    try {
+      const [loreCols] = await connection.query(
+        `SELECT COLUMN_NAME FROM INFORMATION_SCHEMA.COLUMNS 
+         WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'lore_entries'`
+      );
+      const colNames = loreCols.map(c => c.COLUMN_NAME);
+
+      if (!colNames.includes('metadata')) {
+        await connection.query(`ALTER TABLE lore_entries ADD COLUMN metadata JSON NULL`);
+        console.log('[DB] Added metadata JSON column to lore_entries.');
+      }
+
+      if (!colNames.includes('world_id')) {
+        await connection.query(`ALTER TABLE lore_entries ADD COLUMN world_id VARCHAR(255) NULL`);
+        await connection.query(`UPDATE lore_entries SET world_id = CAST(book_id AS CHAR) WHERE world_id IS NULL AND book_id IS NOT NULL`);
+        console.log('[DB] Added world_id VARCHAR(255) column to lore_entries and synchronized.');
+      }
+
+      if (!colNames.includes('updated_at')) {
+        await connection.query(`ALTER TABLE lore_entries ADD COLUMN updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP`);
+        console.log('[DB] Added updated_at column to lore_entries.');
+      }
+
+      // Add indexes safely
+      try {
+        const [indexes] = await connection.query(`SHOW INDEX FROM lore_entries`);
+        const indexNames = indexes.map(i => i.Key_name);
+        if (!indexNames.includes('idx_lore_world_category')) {
+          await connection.query(`ALTER TABLE lore_entries ADD INDEX idx_lore_world_category (world_id, category)`);
+          console.log('[DB] Created index idx_lore_world_category on lore_entries.');
+        }
+        if (!indexNames.includes('idx_lore_title')) {
+          await connection.query(`ALTER TABLE lore_entries ADD INDEX idx_lore_title (title)`);
+          console.log('[DB] Created index idx_lore_title on lore_entries.');
+        }
+      } catch (idxErr) {
+        console.warn('[DB] Index notice for lore_entries:', idxErr.message);
+      }
+    } catch (metaErr) {
+      console.warn('[DB] lore_entries polymorphic columns notice:', metaErr.message);
+    }
+
+    // 11c. graph_states table (Persists React Flow nodes and edges in MySQL JSON)
+    await connection.query(`
+      CREATE TABLE IF NOT EXISTS graph_states (
+        id VARCHAR(64) PRIMARY KEY,
+        world_id VARCHAR(255) NOT NULL UNIQUE,
+        nodes JSON NOT NULL,
+        edges JSON NOT NULL,
+        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+        INDEX idx_graph_world (world_id)
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+    `);
+    console.log('[DB] Table graph_states (MySQL JSON Canvas State) verified.');
+
+    // 11d. node_connections table (Persists individual visual wiring & multi-hop relations)
+    await connection.query(`
+      CREATE TABLE IF NOT EXISTS node_connections (
+        id VARCHAR(64) PRIMARY KEY,
+        world_id VARCHAR(255) NOT NULL,
+        source_node_id VARCHAR(255) NOT NULL,
+        target_node_id VARCHAR(255) NOT NULL,
+        edge_type VARCHAR(50) DEFAULT 'relationship',
+        label VARCHAR(255) NULL,
+        data JSON NULL,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        INDEX idx_node_conn_world (world_id)
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+    `);
+    console.log('[DB] Table node_connections verified.');
+
     // 12. Add book_id to chat_sessions (allows linking story to specific book)
     try {
       const [sessBookCols] = await connection.query(

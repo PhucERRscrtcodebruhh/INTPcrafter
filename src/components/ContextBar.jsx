@@ -58,8 +58,8 @@ export default function ContextBar({
   const linkedBook = books.find(b => b.id === activeBookId) || null;
 
   return (
-    <div className="relative border-b border-cyan-500/15 bg-cyber-900/60 px-4 py-2 select-none font-mono">
-      <div className="flex flex-wrap items-center justify-between gap-3 text-xs">
+    <div className="relative border-b border-cyan-500/15 bg-cyber-900/60 px-3 py-1 select-none font-mono">
+      <div className="flex flex-wrap items-center justify-between gap-2 text-xs">
         {/* Left: Token Count & Model Limit Gauge */}
         <div className="flex items-center space-x-3">
           <div className="flex items-center space-x-1.5 text-slate-300">

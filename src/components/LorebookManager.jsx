@@ -11,9 +11,9 @@ import {
   Tag
 } from 'lucide-react';
 import { ClientRAGService } from '../services/ragEngine';
-import Modal from './Modal';
+import LoreEntityModal from './modals/LoreEntityModal';
 
-const CATEGORIES = ['All', 'Character', 'MagicSystem', 'Location', 'Timeline', 'Faction', 'General'];
+const CATEGORIES = ['All', 'Character', 'MagicSystem', 'Location', 'Event', 'Timeline', 'Faction', 'General'];
 
 export default function LorebookManager({ bookId, bookTitle, onEntriesUpdated }) {
   const [loreList, setLoreList] = useState([]);
@@ -22,16 +22,6 @@ export default function LorebookManager({ bookId, bookTitle, onEntriesUpdated })
   const [isLoading, setIsLoading] = useState(false);
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [editingEntry, setEditingEntry] = useState(null);
-
-  // Form state
-  const [formData, setFormData] = useState({
-    title: '',
-    category: 'Character',
-    aliases: '',
-    rules: '',
-    content: ''
-  });
-  const [formError, setFormError] = useState('');
 
   const loadLore = async () => {
     setIsLoading(true);
@@ -51,28 +41,18 @@ export default function LorebookManager({ bookId, bookTitle, onEntriesUpdated })
 
   const handleOpenCreate = () => {
     setEditingEntry(null);
-    setFormData({
-      title: '',
-      category: selectedCategory === 'All' ? 'Character' : selectedCategory,
-      aliases: '',
-      rules: '',
-      content: ''
-    });
-    setFormError('');
     setIsModalOpen(true);
   };
 
   const handleOpenEdit = (entry) => {
     setEditingEntry(entry);
-    setFormData({
-      title: entry.title,
-      category: entry.category,
-      aliases: entry.aliases || '',
-      rules: entry.rules || '',
-      content: entry.content || ''
-    });
-    setFormError('');
     setIsModalOpen(true);
+  };
+
+  const handleSaveEntry = async (entryData) => {
+    await ClientRAGService.saveLoreEntry(entryData);
+    loadLore();
+    onEntriesUpdated?.();
   };
 
   const handleDelete = async (id, title) => {
@@ -91,37 +71,18 @@ export default function LorebookManager({ bookId, bookTitle, onEntriesUpdated })
     try {
       await ClientRAGService.saveLoreEntry({
         book_id: bookId,
+        worldId: String(bookId),
         title: 'Untitled Lore ' + Date.now().toString().slice(-4),
         category: 'General',
         aliases: '',
         rules: '',
-        content: ''
+        content: '',
+        metadata: {}
       });
       loadLore();
       onEntriesUpdated?.();
     } catch (err) {
       alert('Failed to create blank lore: ' + err.message);
-    }
-  };
-
-  const handleSubmit = async (e) => {
-    e.preventDefault();
-    if (!formData.title.trim()) {
-      setFormError('Title is required');
-      return;
-    }
-
-    try {
-      await ClientRAGService.saveLoreEntry({
-        ...formData,
-        book_id: bookId,
-        id: editingEntry?.id
-      });
-      setIsModalOpen(false);
-      loadLore();
-      onEntriesUpdated?.();
-    } catch (err) {
-      setFormError(err.message || 'Failed to save lore');
     }
   };
 
@@ -232,6 +193,32 @@ export default function LorebookManager({ bookId, bookTitle, onEntriesUpdated })
                       </span>
                     </div>
 
+                    {/* Polymorphic Metadata Highlights */}
+                    {entry.metadata && typeof entry.metadata === 'object' && Object.keys(entry.metadata).length > 0 && (
+                      <div className="flex flex-wrap gap-1 py-1 border-t border-slate-800/60">
+                        {entry.metadata.realmOrLevel && (
+                          <span className="px-1.5 py-0.5 rounded bg-cyan-950/80 border border-cyan-500/30 text-cyan-300 text-[10px] font-mono">
+                            ⚡ {entry.metadata.realmOrLevel}
+                          </span>
+                        )}
+                        {entry.metadata.type && (
+                          <span className="px-1.5 py-0.5 rounded bg-purple-950/80 border border-purple-500/30 text-purple-300 text-[10px] font-mono">
+                            🔮 {entry.metadata.type}
+                          </span>
+                        )}
+                        {entry.metadata.controllingFaction && (
+                          <span className="px-1.5 py-0.5 rounded bg-emerald-950/80 border border-emerald-500/30 text-emerald-300 text-[10px] font-mono">
+                            🏛️ {entry.metadata.controllingFaction}
+                          </span>
+                        )}
+                        {entry.metadata.timeAnchor && (
+                          <span className="px-1.5 py-0.5 rounded bg-amber-950/80 border border-amber-500/30 text-amber-300 text-[10px] font-mono">
+                            ⏳ {entry.metadata.timeAnchor}
+                          </span>
+                        )}
+                      </div>
+                    )}
+
                     {/* Rules */}
                     {entry.rules && (
                       <div className="p-2 rounded bg-amber-950/25 border border-amber-500/20 text-amber-200 text-[11px] font-mono leading-relaxed">
@@ -281,107 +268,15 @@ export default function LorebookManager({ bookId, bookTitle, onEntriesUpdated })
         )}
       </div>
 
-      {/* Add / Edit Modal */}
-      <Modal
+      {/* Polymorphic Lore Entity Modal */}
+      <LoreEntityModal
         isOpen={isModalOpen}
         onClose={() => setIsModalOpen(false)}
-        title={editingEntry ? `Edit Lore: ${editingEntry.title}` : 'Create New Canon Lore Entry'}
-        maxWidth="max-w-2xl"
-      >
-        <form onSubmit={handleSubmit} className="space-y-4 text-xs">
-          {formError && (
-            <div className="p-2.5 rounded bg-rose-950/60 border border-rose-500/40 text-rose-300">
-              {formError}
-            </div>
-          )}
-
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-            {/* Title */}
-            <div className="space-y-1">
-              <label className="text-slate-300 font-semibold block">Entity / Lore Title *</label>
-              <input
-                type="text"
-                placeholder="e.g. Kaelen Vance, Flux Burn, Sector 07"
-                value={formData.title}
-                onChange={(e) => setFormData({ ...formData, title: e.target.value })}
-                className="w-full bg-cyber-950 border border-slate-800 rounded px-3 py-2 text-slate-200 focus:outline-none focus:border-cyan-400"
-              />
-            </div>
-
-            {/* Category */}
-            <div className="space-y-1">
-              <label className="text-slate-300 font-semibold block">Category</label>
-              <select
-                value={formData.category}
-                onChange={(e) => setFormData({ ...formData, category: e.target.value })}
-                className="w-full bg-cyber-950 border border-slate-800 rounded px-3 py-2 text-slate-200 focus:outline-none focus:border-cyan-400"
-              >
-                {CATEGORIES.filter(c => c !== 'All').map(cat => (
-                  <option key={cat} value={cat} className="bg-cyber-900">{cat}</option>
-                ))}
-              </select>
-            </div>
-          </div>
-
-          {/* Aliases */}
-          <div className="space-y-1">
-            <label className="text-slate-300 font-semibold block">
-              Aliases & Synonyms (comma separated)
-            </label>
-            <input
-              type="text"
-              placeholder="e.g. Kael, The Spire Weaver, Unit 404"
-              value={formData.aliases}
-              onChange={(e) => setFormData({ ...formData, aliases: e.target.value })}
-              className="w-full bg-cyber-950 border border-slate-800 rounded px-3 py-2 text-slate-200 focus:outline-none focus:border-cyan-400"
-            />
-          </div>
-
-          {/* Invariant Rules */}
-          <div className="space-y-1">
-            <label className="text-amber-400 font-semibold flex items-center space-x-1">
-              <ShieldAlert size={13} />
-              <span>Rules & Deterministic Constraints</span>
-            </label>
-            <textarea
-              rows={3}
-              placeholder="e.g. RULE 1: Cannot generate aether without conductor. RULE 2: Cold iron blocks all resonance."
-              value={formData.rules}
-              onChange={(e) => setFormData({ ...formData, rules: e.target.value })}
-              className="w-full bg-cyber-950 border border-amber-500/30 rounded px-3 py-2 text-amber-100 focus:outline-none focus:border-amber-400 font-mono text-xs"
-            />
-          </div>
-
-          {/* Canonical Content */}
-          <div className="space-y-1">
-            <label className="text-slate-300 font-semibold block">Canonical Lore & Narrative Details</label>
-            <textarea
-              rows={5}
-              placeholder="Detailed lore description, historical context, psychological traits, and causal mechanics..."
-              value={formData.content}
-              onChange={(e) => setFormData({ ...formData, content: e.target.value })}
-              className="w-full bg-cyber-950 border border-slate-800 rounded px-3 py-2 text-slate-200 focus:outline-none focus:border-cyan-400 text-xs leading-relaxed"
-            />
-          </div>
-
-          {/* Submit */}
-          <div className="flex justify-end space-x-2 pt-2 border-t border-slate-800">
-            <button
-              type="button"
-              onClick={() => setIsModalOpen(false)}
-              className="px-3 py-1.5 rounded bg-cyber-900 border border-slate-800 text-slate-400 hover:text-slate-200"
-            >
-              Cancel
-            </button>
-            <button
-              type="submit"
-              className="px-4 py-1.5 rounded bg-cyan-400 text-black font-semibold hover:bg-cyan-300 shadow-glow-cyan-sm"
-            >
-              {editingEntry ? 'Save Changes' : 'Create Entry'}
-            </button>
-          </div>
-        </form>
-      </Modal>
+        entry={editingEntry}
+        defaultCategory={selectedCategory}
+        bookId={bookId}
+        onSave={handleSaveEntry}
+      />
     </div>
   );
 }

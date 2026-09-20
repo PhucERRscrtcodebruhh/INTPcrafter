@@ -1,0 +1,68 @@
+datasource db {
+  provider = "mysql"
+  url      = env("DATABASE_URL")
+}
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+model LoreBook {
+  id                Int         @id @default(autoincrement())
+  userId            Int?        @map("user_id")
+  title             String      @db.VarChar(255)
+  description       String?     @db.Text
+  systemInstruction String?     @map("system_instruction") @db.LongText
+  language          String?     @default("vi") @db.VarChar(20)
+  createdAt         DateTime    @default(now()) @map("created_at")
+  loreEntries       LoreEntry[]
+  graphState        GraphState?
+
+  @@map("lore_books")
+}
+
+model LoreEntry {
+  id            Int         @id @default(autoincrement())
+  worldId       String?     @map("world_id") @db.VarChar(255)
+  bookId        Int?        @map("book_id")
+  title         String      @db.VarChar(255)
+  category      String      @default("General") @db.VarChar(50) // Character, MagicSystem, Location, Event, General
+  aliases       Json?       // Array of string aliases or string
+  content       String?     @map("content") @db.LongText // Canonical lore details
+  canonicalLore String?     @map("canonical_lore") @db.LongText
+  rules         String?     @db.Text
+  metadata      Json?       // Polymorphic fields based on category
+  createdAt     DateTime    @default(now()) @map("created_at")
+  updatedAt     DateTime    @default(now()) @updatedAt @map("updated_at")
+  loreBook      LoreBook?   @relation(fields: [bookId], references: [id], onDelete: Cascade)
+
+  @@index([worldId, category], name: "idx_lore_world_category")
+  @@index([bookId, category], name: "idx_lore_book_category")
+  @@index([title], name: "idx_lore_title")
+  @@map("lore_entries")
+}
+
+model GraphState {
+  id        String    @id @default(uuid())
+  worldId   String    @unique @map("world_id") @db.VarChar(255)
+  nodes     Json      // React Flow node positions and UI state
+  edges     Json      // React Flow connection edges
+  updatedAt DateTime  @default(now()) @updatedAt @map("updated_at")
+
+  @@index([worldId], name: "idx_graph_world")
+  @@map("graph_states")
+}
+
+model NodeConnection {
+  id           String   @id @default(uuid())
+  worldId      String   @map("world_id") @db.VarChar(255)
+  sourceNodeId String   @map("source_node_id") @db.VarChar(255)
+  targetNodeId String   @map("target_node_id") @db.VarChar(255)
+  edgeType     String   @default("relationship") @map("edge_type") @db.VarChar(50)
+  label        String?  @db.VarChar(255)
+  data         Json?
+  createdAt    DateTime @default(now()) @map("created_at")
+
+  @@index([worldId], name: "idx_node_conn_world")
+  @@map("node_connections")
+}

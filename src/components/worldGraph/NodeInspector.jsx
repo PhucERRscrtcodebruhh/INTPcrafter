@@ -107,7 +107,10 @@ export default function NodeInspector({
     };
 
     return (
-      <div className="w-80 sm:w-96 h-full bg-cyber-950 border-l border-cyan-500/20 flex flex-col z-20 shadow-2xl overflow-hidden animate-fadeIn select-text">
+      <div className="fixed md:relative inset-x-0 bottom-0 md:inset-auto h-[80vh] md:h-full w-full md:w-80 sm:md:w-96 bg-cyber-950 border-t md:border-t-0 md:border-l border-cyan-500/30 md:border-cyan-500/20 rounded-t-2xl md:rounded-none flex flex-col z-40 shadow-2xl overflow-hidden animate-fadeIn select-text pb-safe">
+        {/* Mobile Drag Handle Pill */}
+        <div className="w-12 h-1.5 bg-slate-700/80 rounded-full mx-auto my-2 md:hidden flex-shrink-0" />
+
         {/* Header */}
         <div className="p-3.5 bg-cyber-900 border-b border-cyan-500/20 flex items-center justify-between">
           <div className="flex items-center space-x-2 truncate">
@@ -133,17 +136,17 @@ export default function NodeInspector({
           <div className="flex items-center space-x-1">
             <button
               onClick={() => onDeleteNode(selectedNode.id)}
-              className="p-1.5 rounded hover:bg-rose-950/60 text-slate-400 hover:text-rose-400 transition-colors"
+              className="min-h-[40px] min-w-[40px] flex items-center justify-center rounded hover:bg-rose-950/60 text-slate-400 hover:text-rose-400 transition-colors"
               title="Delete Node"
             >
-              <Trash2 size={14} />
+              <Trash2 size={15} />
             </button>
             <button
               onClick={onClose}
-              className="p-1.5 rounded hover:bg-cyber-800 text-slate-400 hover:text-slate-200"
+              className="min-h-[40px] min-w-[40px] flex items-center justify-center rounded hover:bg-cyber-800 text-slate-400 hover:text-slate-200"
               title="Close"
             >
-              <X size={14} />
+              <X size={17} />
             </button>
           </div>
         </div>
@@ -614,7 +617,10 @@ export default function NodeInspector({
     };
 
     return (
-      <div className="w-80 sm:w-96 h-full bg-cyber-950 border-l border-cyan-500/20 flex flex-col z-20 shadow-2xl overflow-hidden animate-fadeIn select-text">
+      <div className="fixed md:relative inset-x-0 bottom-0 md:inset-auto h-[80vh] md:h-full w-full md:w-80 sm:md:w-96 bg-cyber-950 border-t md:border-t-0 md:border-l border-cyan-500/30 md:border-cyan-500/20 rounded-t-2xl md:rounded-none flex flex-col z-40 shadow-2xl overflow-hidden animate-fadeIn select-text pb-safe">
+        {/* Mobile Drag Handle Pill */}
+        <div className="w-12 h-1.5 bg-slate-700/80 rounded-full mx-auto my-2 md:hidden flex-shrink-0" />
+
         <div className="p-3.5 bg-cyber-900 border-b border-cyan-500/20 flex items-center justify-between">
           <div className="flex items-center space-x-2 truncate">
             <div className="w-7 h-7 rounded bg-blue-950 border border-blue-500/50 flex items-center justify-center text-blue-300">
@@ -633,17 +639,17 @@ export default function NodeInspector({
           <div className="flex items-center space-x-1">
             <button
               onClick={() => onDeleteEdge(selectedEdge.id)}
-              className="p-1.5 rounded hover:bg-rose-950/60 text-slate-400 hover:text-rose-400 transition-colors"
+              className="min-h-[40px] min-w-[40px] flex items-center justify-center rounded hover:bg-rose-950/60 text-slate-400 hover:text-rose-400 transition-colors"
               title="Delete Connection"
             >
-              <Trash2 size={14} />
+              <Trash2 size={15} />
             </button>
             <button
               onClick={onClose}
-              className="p-1.5 rounded hover:bg-cyber-800 text-slate-400 hover:text-slate-200"
+              className="min-h-[40px] min-w-[40px] flex items-center justify-center rounded hover:bg-cyber-800 text-slate-400 hover:text-slate-200"
               title="Close"
             >
-              <X size={14} />
+              <X size={17} />
             </button>
           </div>
         </div>

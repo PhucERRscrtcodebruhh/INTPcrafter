@@ -166,7 +166,7 @@ const MessageItem = memo(function MessageItem({
 
       {/* Message Bubble Canvas */}
       <div
-        className={`max-w-4xl w-full rounded-lg p-4 text-xs sm:text-[13px] leading-relaxed relative transition-all ${
+        className={`max-w-4xl w-full rounded-lg p-2.5 sm:p-3 text-xs sm:text-[13px] leading-relaxed relative transition-all ${
           isUser
             ? 'bg-cyber-900/90 border border-cyan-500/30 text-slate-100 shadow-glow-cyan-sm'
             : 'glass-panel border border-slate-800 text-slate-200'
@@ -545,7 +545,7 @@ export default function MessageList({
   }
 
   return (
-    <div className="flex-1 overflow-y-auto p-4 sm:p-6 space-y-6">
+    <div className="flex-1 overflow-y-auto p-2 sm:p-2.5 space-y-2">
       {/* Chat Pruning Banner (chat.gemini.com Optimization) */}
       {isPruned && (
         <div className="p-2.5 rounded-lg bg-cyber-950 border border-cyan-500/20 text-xs flex flex-wrap items-center justify-between gap-2 text-slate-400 animate-fadeIn select-none">
