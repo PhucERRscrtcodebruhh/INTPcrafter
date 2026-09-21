@@ -66,7 +66,9 @@ export async function callOpenAICompatibleStream({
   topP = 0.95,
   maxTokens = 4096,
   onChunk,
-  extraHeaders = {}
+  extraHeaders = {},
+  streamTimeout = 60000,
+  signal
 }) {
   const url = `${baseUrl.replace(/\/+$/, '')}/chat/completions`;
   
@@ -112,11 +114,43 @@ export async function callOpenAICompatibleStream({
     headers['X-Title'] = 'StoryContainer Engine';
   }
 
-  const response = await fetch(url, {
-    method: 'POST',
-    headers,
-    body: JSON.stringify(payload)
-  });
+  const controller = new AbortController();
+  if (signal) {
+    if (signal.aborted) {
+      controller.abort(signal.reason);
+    } else {
+      signal.addEventListener('abort', () => controller.abort(signal.reason), { once: true });
+    }
+  }
+
+  let connTimeoutId = setTimeout(() => {
+    const timeoutErr = new Error(`Initial connection timeout exceeded (${Math.round(streamTimeout / 1000)}s)`);
+    timeoutErr.status = 504;
+    timeoutErr.code = 'STREAM_TIMEOUT';
+    controller.abort(timeoutErr);
+  }, streamTimeout);
+
+  let response;
+  try {
+    response = await fetch(url, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify(payload),
+      signal: controller.signal
+    });
+  } catch (fetchErr) {
+    if (controller.signal.aborted) {
+      const reason = controller.signal.reason;
+      if (reason instanceof Error) throw reason;
+      const timeoutErr = new Error(`Initial connection timeout exceeded (${Math.round(streamTimeout / 1000)}s)`);
+      timeoutErr.status = 504;
+      timeoutErr.code = 'STREAM_TIMEOUT';
+      throw timeoutErr;
+    }
+    throw fetchErr;
+  } finally {
+    clearTimeout(connTimeoutId);
+  }
 
   if (!response.ok) {
     let errBody = '';
@@ -142,54 +176,94 @@ export async function callOpenAICompatibleStream({
   let isReasoningOpen = false;
   let buffer = '';
 
-  while (true) {
-    const { done, value } = await reader.read();
-    if (done) break;
+  try {
+    while (true) {
+      let idleTimeoutId;
+      const idleTimeoutPromise = new Promise((_, reject) => {
+        idleTimeoutId = setTimeout(() => {
+          const timeoutErr = new Error(`Stream idle timeout exceeded (${Math.round(streamTimeout / 1000)}s)`);
+          timeoutErr.status = 504;
+          timeoutErr.code = 'STREAM_TIMEOUT';
+          controller.abort(timeoutErr);
+          reject(timeoutErr);
+        }, streamTimeout);
+      });
 
-    buffer += decoder.decode(value, { stream: true });
-    const lines = buffer.split('\n');
-    buffer = lines.pop() || '';
+      let readResult;
+      try {
+        readResult = await Promise.race([
+          reader.read(),
+          idleTimeoutPromise
+        ]);
+      } finally {
+        clearTimeout(idleTimeoutId);
+      }
 
-    for (const line of lines) {
-      const trimmed = line.trim();
-      if (!trimmed || trimmed.startsWith(':')) continue;
-      if (trimmed === 'data: [DONE]') continue;
+      const { done, value } = readResult;
+      if (done) break;
 
-      if (trimmed.startsWith('data: ')) {
-        const jsonStr = trimmed.slice(6);
-        try {
-          const parsed = JSON.parse(jsonStr);
-          const delta = parsed.choices?.[0]?.delta;
-          if (!delta) continue;
+      buffer += decoder.decode(value, { stream: true });
+      const lines = buffer.split('\n');
+      buffer = lines.pop() || '';
 
-          // DeepSeek-R1 reasoning content handling
-          if (delta.reasoning_content) {
-            if (!isReasoningOpen) {
-              isReasoningOpen = true;
-              const openTag = '<think>\n';
-              fullText += openTag;
-              if (onChunk) onChunk(openTag);
+      for (const line of lines) {
+        const trimmed = line.trim();
+        if (!trimmed || trimmed.startsWith(':')) continue;
+        if (trimmed === 'data: [DONE]') continue;
+
+        if (trimmed.startsWith('data: ')) {
+          const jsonStr = trimmed.slice(6);
+          try {
+            const parsed = JSON.parse(jsonStr);
+            const delta = parsed.choices?.[0]?.delta;
+            if (!delta) continue;
+
+            // DeepSeek-R1 reasoning content handling
+            if (delta.reasoning_content) {
+              if (!isReasoningOpen) {
+                isReasoningOpen = true;
+                const openTag = '<think>\n';
+                fullText += openTag;
+                if (onChunk) onChunk(openTag);
+              }
+              reasoningText += delta.reasoning_content;
+              fullText += delta.reasoning_content;
+              if (onChunk) onChunk(delta.reasoning_content);
             }
-            reasoningText += delta.reasoning_content;
-            fullText += delta.reasoning_content;
-            if (onChunk) onChunk(delta.reasoning_content);
-          }
 
-          if (delta.content) {
-            if (isReasoningOpen) {
-              isReasoningOpen = false;
-              const closeTag = '\n</think>\n\n';
-              fullText += closeTag;
-              if (onChunk) onChunk(closeTag);
+            if (delta.content) {
+              if (isReasoningOpen) {
+                isReasoningOpen = false;
+                const closeTag = '\n</think>\n\n';
+                fullText += closeTag;
+                if (onChunk) onChunk(closeTag);
+              }
+              fullText += delta.content;
+              if (onChunk) onChunk(delta.content);
             }
-            fullText += delta.content;
-            if (onChunk) onChunk(delta.content);
+          } catch (parseErr) {
+            // Incomplete chunk, keep going
           }
-        } catch (parseErr) {
-          // Incomplete chunk, keep going
         }
       }
     }
+  } catch (streamErr) {
+    try {
+      await reader.cancel().catch(() => {});
+    } catch {}
+    if (controller.signal.aborted) {
+      const reason = controller.signal.reason;
+      if (reason instanceof Error) throw reason;
+      const timeoutErr = new Error(`Stream idle timeout exceeded (${Math.round(streamTimeout / 1000)}s)`);
+      timeoutErr.status = 504;
+      timeoutErr.code = 'STREAM_TIMEOUT';
+      throw timeoutErr;
+    }
+    throw streamErr;
+  } finally {
+    try {
+      reader.releaseLock();
+    } catch {}
   }
 
   if (isReasoningOpen) {
@@ -455,7 +529,7 @@ export class ProviderKeyPool {
     }
   }
 
-  async executeStreamWithRotation({ model, messages, systemInstruction, generationConfig, onChunk }) {
+  async executeStreamWithRotation({ model, messages, systemInstruction, generationConfig, onChunk, streamTimeout = 60000 }) {
     await this.init();
     if (this.keys.length === 0) {
       throw new Error(`NO_API_KEYS: No API keys configured for provider '${this.provider}'.`);
@@ -465,6 +539,12 @@ export class ProviderKeyPool {
     let attempts = 0;
     const maxAttempts = this.keys.length;
     let previousErrorWas429 = false;
+    let hasStreamStarted = false;
+
+    const wrappedOnChunk = (chunkText) => {
+      hasStreamStarted = true;
+      if (onChunk) onChunk(chunkText);
+    };
 
     const resolvedModel = resolveModelForProvider(model, this.provider);
 
@@ -503,7 +583,8 @@ export class ProviderKeyPool {
           temperature: generationConfig?.temperature ?? 0.7,
           topP: generationConfig?.topP ?? 0.95,
           maxTokens: generationConfig?.maxOutputTokens ?? 4096,
-          onChunk
+          onChunk: wrappedOnChunk,
+          streamTimeout
         });
 
         keyObj.callCount = (keyObj.callCount || 0) + 1;
@@ -524,6 +605,24 @@ export class ProviderKeyPool {
         const errMsg = err.message || 'Unknown Provider Error';
         const lowerMsg = errMsg.toLowerCase();
         console.warn(`[ProviderKeyPool ${this.provider}] Key #${keyObj.id} failed:`, errMsg);
+
+        // If chunks have already started streaming to the client, STRICTLY FORBID key rotation
+        if (hasStreamStarted) {
+          console.warn(`[ProviderKeyPool ${this.provider}] Stream interrupted mid-generation on Key #${keyObj.id}. Mid-stream rotation strictly forbidden.`);
+          err.hasStreamStarted = true;
+          const is429 = status === 429 || errMsg.includes('429') || lowerMsg.includes('quota') || lowerMsg.includes('rate limit');
+          if (is429) {
+            keyObj.rateLimitCount = (keyObj.rateLimitCount || 0) + 1;
+            keyObj.status = 'rate_limited';
+            keyObj.rateLimitedUntil = Date.now() + 60000;
+            keyObj.errorMsg = 'Rate Limit / Quota Exceeded mid-stream (429)';
+            this.updateKeyMetrics(keyObj).catch(() => {});
+          } else {
+            keyObj.errorMsg = errMsg;
+            this.updateKeyMetrics(keyObj).catch(() => {});
+          }
+          throw err;
+        }
 
         const is429 = status === 429 || errMsg.includes('429') || lowerMsg.includes('quota') || lowerMsg.includes('rate limit') || lowerMsg.includes('rate_limit') || lowerMsg.includes('resource_exhausted');
         const isAuthError = status === 401 || status === 403 || 
@@ -569,10 +668,17 @@ export async function dispatchStreamingGeneration({
   contents = [],
   systemInstruction = '',
   generationConfig = {},
-  onChunk
+  onChunk,
+  streamTimeout = 60000
 }) {
   const provider = detectProviderFromModel(requestedModel);
   const rotationLogs = [];
+  let hasStreamStarted = false;
+
+  const trackingOnChunk = (chunkText) => {
+    hasStreamStarted = true;
+    if (onChunk) onChunk(chunkText);
+  };
 
   // If DeepSeek, OpenRouter, or Hugging Face is explicitly requested:
   if (provider !== 'gemini') {
@@ -582,7 +688,8 @@ export async function dispatchStreamingGeneration({
       messages,
       systemInstruction,
       generationConfig,
-      onChunk
+      onChunk: trackingOnChunk,
+      streamTimeout
     });
   }
 
@@ -594,10 +701,18 @@ export async function dispatchStreamingGeneration({
       contents,
       systemInstruction,
       generationConfig,
-      onChunk
+      onChunk: trackingOnChunk,
+      streamTimeout
     });
     return result;
   } catch (geminiErr) {
+    // If stream already began emitting chunks, STRICTLY FORBID cross-provider fallback
+    if (hasStreamStarted || geminiErr.hasStreamStarted) {
+      console.warn(`[Auto-Fallback] Stream already started on Gemini; forbidding cross-provider failover.`);
+      geminiErr.hasStreamStarted = true;
+      throw geminiErr;
+    }
+
     const errMsg = geminiErr.message || '';
     const is503 = errMsg.includes('503') || errMsg.includes('Service Unavailable') || errMsg.includes('High demand');
     const isExhausted = errMsg.includes('ALL_KEYS_EXHAUSTED') || errMsg.includes('ROTATION_EXHAUSTED') || errMsg.includes('NO_API_KEYS');
@@ -618,7 +733,8 @@ export async function dispatchStreamingGeneration({
           messages,
           systemInstruction,
           generationConfig,
-          onChunk
+          onChunk: trackingOnChunk,
+          streamTimeout
         });
         return {
           ...fallbackResult,
@@ -639,7 +755,8 @@ export async function dispatchStreamingGeneration({
           messages,
           systemInstruction,
           generationConfig,
-          onChunk
+          onChunk: trackingOnChunk,
+          streamTimeout
         });
         return {
           ...fallbackResult,

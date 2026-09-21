@@ -389,7 +389,7 @@ export class GeminiKeyPool {
     throw new Error(`ROTATION_EXHAUSTED: Failed after attempting all ${this.keys.length} available keys in pool.`);
   }
 
-  async executeStreamWithFallback({ model, contents, systemInstruction, generationConfig, onChunk }) {
+  async executeStreamWithFallback({ model, contents, systemInstruction, generationConfig, onChunk, streamTimeout = 60000 }) {
     await this.init();
     if (this.keys.length === 0) {
       throw new Error('NO_API_KEYS: No Gemini API keys configured in Key Pool. Please add keys in World Config Dashboard.');
@@ -399,6 +399,12 @@ export class GeminiKeyPool {
     let attempts = 0;
     const maxAttempts = this.keys.length;
     let previousErrorWas429 = false;
+    let hasStreamStarted = false;
+
+    const wrappedOnChunk = (chunkText) => {
+      hasStreamStarted = true;
+      if (onChunk) onChunk(chunkText);
+    };
 
     while (attempts < maxAttempts) {
       const keyIdx = this.getNextKeyIndex();
@@ -456,12 +462,35 @@ export class GeminiKeyPool {
         let finishReason = 'STOP';
         let usageMetadata = null;
 
-        for await (const chunk of responseStream) {
+        const iterator = responseStream[Symbol.asyncIterator]();
+        while (true) {
+          let idleTimeoutId;
+          const idleTimeoutPromise = new Promise((_, reject) => {
+            idleTimeoutId = setTimeout(() => {
+              const timeoutErr = new Error(`Stream idle timeout exceeded (${Math.round(streamTimeout / 1000)}s)`);
+              timeoutErr.status = 504;
+              timeoutErr.code = 'STREAM_TIMEOUT';
+              reject(timeoutErr);
+            }, streamTimeout);
+          });
+
+          let iterResult;
+          try {
+            iterResult = await Promise.race([
+              iterator.next(),
+              idleTimeoutPromise
+            ]);
+          } finally {
+            clearTimeout(idleTimeoutId);
+          }
+
+          if (iterResult.done) break;
+          const chunk = iterResult.value;
           const chunkText = chunk.text || '';
           if (chunkText) {
             fullText += chunkText;
-            if (onChunk) {
-              onChunk(chunkText);
+            if (wrappedOnChunk) {
+              wrappedOnChunk(chunkText);
             }
           }
           if (chunk.candidates?.[0]?.finishReason) {
@@ -492,6 +521,24 @@ export class GeminiKeyPool {
         const status = err.status || err.statusCode || 0;
         const errMsg = err.message || 'Unknown API Error';
         console.warn(`[KeyPool Stream] Key #${keyObj.id} failed:`, errMsg);
+
+        // If chunks have already started streaming, STRICTLY FORBID key rotation
+        if (hasStreamStarted) {
+          console.warn(`[KeyPool Stream] Key #${keyObj.id} failed mid-stream. Mid-stream rotation strictly forbidden.`);
+          err.hasStreamStarted = true;
+          const is429 = status === 429 || errMsg.includes('429') || errMsg.includes('RESOURCE_EXHAUSTED') || errMsg.includes('quota');
+          if (is429) {
+            keyObj.rateLimitCount = (keyObj.rateLimitCount || 0) + 1;
+            keyObj.status = 'rate_limited';
+            keyObj.rateLimitedUntil = Date.now() + 60000;
+            keyObj.errorMsg = 'Rate Limit / Quota Exceeded mid-stream (429)';
+            this.updateKeyMetrics(keyObj).catch(() => {});
+          } else {
+            keyObj.errorMsg = errMsg;
+            this.updateKeyMetrics(keyObj).catch(() => {});
+          }
+          throw err;
+        }
 
         const is429 = status === 429 || errMsg.includes('429') || errMsg.includes('RESOURCE_EXHAUSTED') || errMsg.includes('quota');
         previousErrorWas429 = is429;

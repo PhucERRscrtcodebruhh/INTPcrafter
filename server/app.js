@@ -456,6 +456,20 @@ app.post('/api/chat/stream', optionalAuth, async (req, res) => {
   res.setHeader('Connection', 'keep-alive');
   res.flushHeaders?.();
 
+  let hasStreamStarted = false;
+  const keepAliveInterval = setInterval(() => {
+    if (!res.writableEnded) {
+      res.write(': keep-alive\n\n');
+    }
+  }, 15000);
+
+  const cleanupKeepAlive = () => {
+    clearInterval(keepAliveInterval);
+  };
+
+  req.on('close', cleanupKeepAlive);
+  req.on('error', cleanupKeepAlive);
+
   try {
     const [sessRows] = await pool.query(
       `SELECT s.book_id, COALESCE(s.rolling_threshold, 32768) as rolling_threshold, b.title as book_title, b.system_instruction as book_instruction
@@ -546,9 +560,12 @@ app.post('/api/chat/stream', optionalAuth, async (req, res) => {
         maxOutputTokens: parseInt(maxOutputTokens, 10),
       },
       onChunk: (chunkText) => {
+        hasStreamStarted = true;
         res.write(`event: chunk\ndata: ${JSON.stringify({ text: chunkText })}\n\n`);
       }
     });
+
+    cleanupKeepAlive();
 
     const replyText = result.text;
 
@@ -586,6 +603,7 @@ app.post('/api/chat/stream', optionalAuth, async (req, res) => {
 
     res.end();
   } catch (err) {
+    cleanupKeepAlive();
     console.error('[Stream API Error]:', err);
     const errMsg = err.message || 'Stream generation failed';
     const status = err.status || 0;
@@ -594,10 +612,24 @@ app.post('/api/chat/stream', optionalAuth, async (req, res) => {
     const isAuth = status === 401 || status === 403 || errMsg.includes('API_KEY_INVALID') || lower.includes('unauthorized') || lower.includes('incorrect api key');
     const errorType = isRateLimit ? 'rate_limit' : (isAuth ? 'auth' : 'server');
 
+    if (hasStreamStarted || err.hasStreamStarted) {
+      res.write(`event: error\ndata: ${JSON.stringify({
+        error: "Stream interrupted mid-generation",
+        details: errMsg,
+        status: status || (isRateLimit ? 429 : 500),
+        type: errorType,
+        hasStreamStarted: true
+      })}\n\n`);
+      res.write(`event: end\ndata: ${JSON.stringify({ done: true })}\n\n`);
+      res.end();
+      return;
+    }
+
     res.write(`event: error\ndata: ${JSON.stringify({
       error: errMsg,
       type: errorType,
-      status: status || (isRateLimit ? 429 : (isAuth ? 401 : 500))
+      status: status || (isRateLimit ? 429 : (isAuth ? 401 : 500)),
+      hasStreamStarted: false
     })}\n\n`);
     res.end();
   }
