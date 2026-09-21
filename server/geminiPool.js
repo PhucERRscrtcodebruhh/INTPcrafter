@@ -371,7 +371,7 @@ export class GeminiKeyPool {
           keyObj.errorMsg = 'Rate Limit / Quota Exceeded (429)';
           rotationLogs.push(`Key #${keyObj.id} hit 429 Quota Limit. Marked rate-limited (60s cooldown). Immediate failover to next key.`);
           this.updateKeyMetrics(keyObj).catch(() => {});
-        } else if (status === 400 && (errMsg.includes('API_KEY_INVALID') || errMsg.includes('invalid') || errMsg.includes('API key not valid'))) {
+        } else if ((status === 400 || status === 403) && (errMsg.includes('API_KEY_INVALID') || errMsg.includes('API key not valid') || errMsg.toLowerCase().includes('api_key_invalid'))) {
           // Invalid API Key
           keyObj.status = 'invalid';
           keyObj.errorMsg = 'Invalid API Key';
@@ -503,7 +503,7 @@ export class GeminiKeyPool {
           keyObj.errorMsg = 'Rate Limit / Quota Exceeded (429)';
           rotationLogs.push(`Key #${keyObj.id} hit 429 Quota Limit. Marked rate-limited (60s cooldown). Immediate failover to next key.`);
           this.updateKeyMetrics(keyObj).catch(() => {});
-        } else if (status === 400 && (errMsg.includes('API_KEY_INVALID') || errMsg.includes('invalid') || errMsg.includes('API key not valid'))) {
+        } else if ((status === 400 || status === 403) && (errMsg.includes('API_KEY_INVALID') || errMsg.includes('API key not valid') || errMsg.toLowerCase().includes('api_key_invalid'))) {
           keyObj.status = 'invalid';
           keyObj.errorMsg = 'Invalid API Key';
           rotationLogs.push(`Key #${keyObj.id} is invalid. Rotating to next key with 2s cooldown...`);

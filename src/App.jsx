@@ -62,6 +62,8 @@ export default function App() {
   const [isStreaming, setIsStreaming] = useState(false);
   const [streamingText, setStreamingText] = useState('');
   const [streamingLore, setStreamingLore] = useState([]);
+  const isGeneratingRef = useRef(false);
+  const abortControllerRef = useRef(null);
 
   // Lore Drawer State
   const [retrievedLore, setRetrievedLore] = useState([]);
@@ -150,6 +152,9 @@ export default function App() {
     return () => {
       window.removeEventListener('keydown', handleKeyDown);
       window.removeEventListener('auth:logout', handleAuthLogout);
+      if (abortControllerRef.current) {
+        abortControllerRef.current.abort();
+      }
     };
   }, []);
 
@@ -188,9 +193,16 @@ export default function App() {
     }
   }, [activeSessionId, sessions]);
 
-  // Handler for session selection with immediate save flush of previous session
+  // Handler for session selection with immediate save flush of previous session and stream cancellation
   const handleSelectSession = (id) => {
     if (id === activeSessionId) return;
+    if (abortControllerRef.current) {
+      abortControllerRef.current.abort();
+    }
+    isGeneratingRef.current = false;
+    setIsStreaming(false);
+    setIsLoading(false);
+    setStreamingText('');
     flushPendingRollingThresholdSave();
     setActiveSessionId(id);
   };
@@ -369,15 +381,35 @@ export default function App() {
     return true;
   };
 
+  // Abort user generation
+  const handleAbortStream = () => {
+    if (abortControllerRef.current) {
+      abortControllerRef.current.abort();
+    }
+    isGeneratingRef.current = false;
+    setIsStreaming(false);
+    setIsLoading(false);
+    setStreamingText('');
+  };
+
   // Streaming Chat Execution with Typing Effect & RAG Key Pool Fallback
   const executeChatStream = async (userPrompt) => {
-    if (!userPrompt?.trim() || !activeSessionId || isLoading || isStreaming) return;
+    if (!userPrompt?.trim() || !activeSessionId || isGeneratingRef.current || isLoading || isStreaming) {
+      return;
+    }
 
     // BYOK check
     if (!checkByokKeys()) return;
 
+    if (abortControllerRef.current) {
+      abortControllerRef.current.abort();
+    }
+    abortControllerRef.current = new AbortController();
+
     const cleanPrompt = userPrompt.trim();
+    isGeneratingRef.current = true;
     setIsLoading(true);
+    setIsStreaming(true);
     setStreamingText('');
     setStreamingLore([]);
     setErrorMessage(null);
@@ -393,6 +425,8 @@ export default function App() {
     };
     setMessages(prev => [...prev, tempUserMsg]);
 
+    let accumulatedText = '';
+
     try {
       await api.sendChatStream({
         sessionId: activeSessionId,
@@ -403,6 +437,7 @@ export default function App() {
         maxOutputTokens,
         contextRollingThreshold: rollingThreshold,
       }, {
+        signal: abortControllerRef.current.signal,
         onRag: (ragData) => {
           if (ragData?.retrievedLore?.length > 0) {
             setStreamingLore(ragData.retrievedLore);
@@ -411,11 +446,12 @@ export default function App() {
         },
         onChunk: (chunkText) => {
           setIsLoading(false);
-          setIsStreaming(true);
-          setStreamingText(prev => prev + chunkText);
+          accumulatedText += chunkText;
+          setStreamingText(accumulatedText);
         },
         onDone: async (doneData) => {
           setIsStreaming(false);
+          setIsLoading(false);
           setStreamingText('');
           await loadMessages(activeSessionId);
 
@@ -432,25 +468,34 @@ export default function App() {
           loadKeyPoolTelemetry();
         },
         onError: (err) => {
+          if (err.name === 'AbortError' || err.message?.includes('aborted')) return;
           console.error('Chat stream error:', err);
-          setErrorMessage(err.message || 'Error executing world simulation stream');
+          const prefix = err.type === 'rate_limit' ? '⏱️ Rate Limit (429): ' : (err.type === 'auth' ? '🔑 Auth Error: ' : '⚠️ Error: ');
+          setErrorMessage(prefix + (err.message || 'Error executing world simulation stream'));
           setIsStreaming(false);
+          setIsLoading(false);
           setStreamingText('');
           loadMessages(activeSessionId);
         }
       });
     } catch (err) {
-      console.error('Chat error:', err);
-      const msg = err.message || 'Error executing world simulation';
-      setErrorMessage(msg);
-      loadMessages(activeSessionId);
+      if (err.name !== 'AbortError' && !err.message?.includes('aborted')) {
+        console.error('Chat error:', err);
+        const prefix = err.type === 'rate_limit' ? '⏱️ Rate Limit (429): ' : (err.type === 'auth' ? '🔑 Auth Error: ' : '⚠️ Error: ');
+        const msg = prefix + (err.message || 'Error executing world simulation');
+        setErrorMessage(msg);
+        loadMessages(activeSessionId);
+      }
     } finally {
+      isGeneratingRef.current = false;
       setIsLoading(false);
+      setIsStreaming(false);
+      abortControllerRef.current = null;
     }
   };
 
   const handleSendChat = async () => {
-    if (!prompt.trim()) return;
+    if (!prompt.trim() || isGeneratingRef.current || isLoading || isStreaming) return;
     const userPrompt = prompt.trim();
     setPrompt('');
     await executeChatStream(userPrompt);
@@ -465,6 +510,8 @@ export default function App() {
         setMessages(prev => prev.map(m => m.id === messageId ? { ...m, content: newContent } : m));
         return;
       }
+
+      if (isGeneratingRef.current || isLoading || isStreaming) return;
 
       // BYOK check before regenerate
       if (!checkByokKeys()) return;
@@ -508,7 +555,7 @@ export default function App() {
 
   // Regenerate turn (for both AI response or User prompt)
   const handleRegenerateMessage = async (msg) => {
-    if (!activeSessionId || isLoading || isStreaming) return;
+    if (!activeSessionId || isLoading || isStreaming || isGeneratingRef.current) return;
 
     // BYOK check
     if (!checkByokKeys()) return;
@@ -668,6 +715,7 @@ export default function App() {
             activeBookId={linkedBookId}
             onLinkBook={handleLinkBookToSession}
             isZenMode={isZenMode}
+            onAbort={handleAbortStream}
           />
         ) : (
           <LorebookDashboard

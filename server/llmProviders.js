@@ -71,7 +71,8 @@ export async function callOpenAICompatibleStream({
   const url = `${baseUrl.replace(/\/+$/, '')}/chat/completions`;
   
   const formattedMessages = [];
-  if (systemInstruction && systemInstruction.trim()) {
+  const hasSystemInMessages = messages.some(m => m.role === 'system');
+  if (!hasSystemInMessages && systemInstruction && systemInstruction.trim()) {
     formattedMessages.push({
       role: 'system',
       content: systemInstruction.trim()
@@ -85,7 +86,9 @@ export async function callOpenAICompatibleStream({
     } else if (Array.isArray(msg.parts)) {
       content = msg.parts.map(p => p.text || '').join('');
     }
-    const role = msg.role === 'model' || msg.role === 'assistant' ? 'assistant' : 'user';
+    const role = (msg.role === 'model' || msg.role === 'assistant')
+      ? 'assistant'
+      : (msg.role === 'system' ? 'system' : 'user');
     formattedMessages.push({ role, content });
   });
 
@@ -220,7 +223,8 @@ export async function callOpenAICompatibleApi({
   const url = `${baseUrl.replace(/\/+$/, '')}/chat/completions`;
   
   const formattedMessages = [];
-  if (systemInstruction && systemInstruction.trim()) {
+  const hasSystemInMessages = messages.some(m => m.role === 'system');
+  if (!hasSystemInMessages && systemInstruction && systemInstruction.trim()) {
     formattedMessages.push({
       role: 'system',
       content: systemInstruction.trim()
@@ -234,7 +238,9 @@ export async function callOpenAICompatibleApi({
     } else if (Array.isArray(msg.parts)) {
       content = msg.parts.map(p => p.text || '').join('');
     }
-    const role = msg.role === 'model' || msg.role === 'assistant' ? 'assistant' : 'user';
+    const role = (msg.role === 'model' || msg.role === 'assistant')
+      ? 'assistant'
+      : (msg.role === 'system' ? 'system' : 'user');
     formattedMessages.push({ role, content });
   });
 
@@ -516,9 +522,17 @@ export class ProviderKeyPool {
       } catch (err) {
         const status = err.status || 0;
         const errMsg = err.message || 'Unknown Provider Error';
+        const lowerMsg = errMsg.toLowerCase();
         console.warn(`[ProviderKeyPool ${this.provider}] Key #${keyObj.id} failed:`, errMsg);
 
-        const is429 = status === 429 || errMsg.includes('429') || errMsg.includes('quota') || errMsg.includes('rate limit');
+        const is429 = status === 429 || errMsg.includes('429') || lowerMsg.includes('quota') || lowerMsg.includes('rate limit') || lowerMsg.includes('rate_limit') || lowerMsg.includes('resource_exhausted');
+        const isAuthError = status === 401 || status === 403 || 
+          errMsg.includes('API_KEY_INVALID') || 
+          lowerMsg.includes('invalid api key') || 
+          lowerMsg.includes('incorrect api key') || 
+          lowerMsg.includes('unauthorized') || 
+          lowerMsg.includes('authentication failed');
+
         previousErrorWas429 = is429;
 
         if (is429) {
@@ -528,14 +542,14 @@ export class ProviderKeyPool {
           keyObj.errorMsg = 'Rate Limit / Quota Exceeded (429)';
           rotationLogs.push(`Key #${keyObj.id} (${this.provider}) hit 429 limit. Rotating immediately...`);
           this.updateKeyMetrics(keyObj).catch(() => {});
-        } else if (status === 401 || status === 403 || errMsg.includes('Authentication') || errMsg.includes('invalid') || errMsg.includes('Unauthorized')) {
+        } else if (isAuthError) {
           keyObj.status = 'invalid';
           keyObj.errorMsg = 'Invalid API Key / Unauthorized';
           rotationLogs.push(`Key #${keyObj.id} (${this.provider}) is invalid.`);
           this.updateKeyMetrics(keyObj).catch(() => {});
         } else {
           keyObj.errorMsg = errMsg;
-          rotationLogs.push(`Key #${keyObj.id} (${this.provider}) error: ${errMsg}`);
+          rotationLogs.push(`Key #${keyObj.id} (${this.provider}) transient error: ${errMsg}`);
           this.updateKeyMetrics(keyObj).catch(() => {});
         }
       }

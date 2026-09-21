@@ -258,8 +258,22 @@ app.delete('/api/sessions/:sessionId/messages/from/:messageId', optionalAuth, as
 });
 
 // ==========================================
-// CORE GENERATION & INTP RAG ENGINE (BYOK per-user)
+// STRICT THREE-TIER LLM PREFIX CACHING ARCHITECTURE
+// Tier 0 (Global Core - Completely Static across ALL requests)
+// Tier 1 (World Core Rules - Static/Append-Only per World Container)
+// Tier 2 (Dynamic RAG & User Input - Attached ONLY to terminal user message)
 // ==========================================
+
+export const TIER_0_GLOBAL_CORE = `You are a deterministic world simulator and master novel engine operating under strict causal consistency.
+Role & Persona:
+- Maintain uncompromising continuity, logical causality, and immersive psychological depth.
+- Adhere strictly to established physical laws, magic/cultivation realm hierarchies, and world rules without arbitrary retcons.
+- Write vivid, evocative, sensory-rich prose with natural pacing and authentic character voice.
+
+Constraints & Formatting:
+- When reasoning through invariants, logical constraints, or plot consequences, encapsulate cognitive trace inside <think>...</think> blocks.
+- Ground all narrative assertions in the established world lore, active constraints, and prior chronicle events.
+- Never violate established resource costs, physical limitations, or world invariants.`;
 
 app.post('/api/chat', optionalAuth, async (req, res) => {
   const {
@@ -303,26 +317,23 @@ app.post('/api/chat', optionalAuth, async (req, res) => {
       [sessionId]
     );
 
-    const [instRows] = await pool.query(
-      `SELECT value FROM system_configs WHERE key_name = 'master_system_instruction'`
-    );
-    const masterInstruction = instRows[0]?.value || 'You are a deterministic world simulator and novel engine.';
-
     const recentMessages = historyRows.slice(-3);
-    const { retrievedLore, formattedContext, retrievedLoreIds } = await RAGEngine.retrieveLore({
+    const { retrievedLore, retrievedLoreIds } = await RAGEngine.retrieveLore({
       currentPrompt: cleanPrompt,
       recentMessages,
       maxResults: 6,
       bookId
     });
 
-    let fullSystemInstruction = masterInstruction;
-    if (sessionBook?.book_instruction?.trim()) {
-      fullSystemInstruction += `\n\n[WORLD SPECIFIC SYSTEM INSTRUCTION - ${sessionBook.book_title || 'Active World'}]\n${sessionBook.book_instruction.trim()}`;
-    }
-    if (formattedContext) {
-      fullSystemInstruction += `\n${formattedContext}`;
-    }
+    // Tier 0: Global Core - Completely Static across ALL requests
+    const tier0GlobalCore = TIER_0_GLOBAL_CORE;
+
+    // Tier 1: World Core Rules - Static/Append-Only per active world
+    const tier1WorldCore = sessionBook?.book_instruction?.trim()
+      ? `[WORLD CORE RULES - ${sessionBook.book_title || 'Active Chronicle'}]\n${sessionBook.book_instruction.trim()}`
+      : `[WORLD CORE RULES - Default Invariants]\nMaintain logical causality, physical laws, and continuity across chronicle events.`;
+
+    const fullStaticSystemInstruction = `${tier0GlobalCore}\n\n${tier1WorldCore}`;
 
     const modelLimit = getModelContextLimit(model);
     const sessionThreshold = req.body.contextRollingThreshold !== undefined 
@@ -336,7 +347,10 @@ app.post('/api/chat', optionalAuth, async (req, res) => {
       originalCount,
       keptCount,
       totalTokens
-    } = applyRollingContext(historyRows, fullSystemInstruction, '', effectiveThreshold);
+    } = applyRollingContext(historyRows, fullStaticSystemInstruction, '', effectiveThreshold);
+
+    // Tier 2: Dynamic RAG & User Input (Volatile Suffix) strictly on terminal user message
+    const tier2UserPrompt = RAGEngine.formatTier2Prompt(cleanPrompt, retrievedLore);
 
     const contents = prunedMessages.map(m => ({
       role: m.role === 'user' ? 'user' : 'model',
@@ -344,17 +358,19 @@ app.post('/api/chat', optionalAuth, async (req, res) => {
     }));
     contents.push({
       role: 'user',
-      parts: [{ text: cleanPrompt }]
+      parts: [{ text: tier2UserPrompt }]
     });
 
-    const messages = prunedMessages.map(m => ({
-      role: m.role === 'user' ? 'user' : 'assistant',
-      content: m.content
-    }));
-    messages.push({
-      role: 'user',
-      content: cleanPrompt
-    });
+    // Reconstruct outbound messages with strict 3-tier prefix caching hierarchy
+    const messages = [
+      { role: 'system', content: tier0GlobalCore },
+      { role: 'system', content: tier1WorldCore },
+      ...prunedMessages.map(m => ({
+        role: m.role === 'user' ? 'user' : 'assistant',
+        content: m.content
+      })),
+      { role: 'user', content: tier2UserPrompt }
+    ];
 
     await pool.query(
       `INSERT INTO chat_messages (session_id, role, content, retrieved_lore_ids) VALUES (?, 'user', ?, ?)`,
@@ -366,7 +382,7 @@ app.post('/api/chat', optionalAuth, async (req, res) => {
       requestedModel: model,
       messages,
       contents,
-      systemInstruction: fullSystemInstruction,
+      systemInstruction: fullStaticSystemInstruction,
       generationConfig: {
         temperature: parseFloat(temperature),
         topP: parseFloat(topP),
@@ -456,26 +472,23 @@ app.post('/api/chat/stream', optionalAuth, async (req, res) => {
       [sessionId]
     );
 
-    const [instRows] = await pool.query(
-      `SELECT value FROM system_configs WHERE key_name = 'master_system_instruction'`
-    );
-    const masterInstruction = instRows[0]?.value || 'You are a deterministic world simulator and novel engine.';
-
     const recentMessages = historyRows.slice(-3);
-    const { retrievedLore, formattedContext, retrievedLoreIds } = await RAGEngine.retrieveLore({
+    const { retrievedLore, retrievedLoreIds } = await RAGEngine.retrieveLore({
       currentPrompt: cleanPrompt,
       recentMessages,
       maxResults: 6,
       bookId
     });
 
-    let fullSystemInstruction = masterInstruction;
-    if (sessionBook?.book_instruction?.trim()) {
-      fullSystemInstruction += `\n\n[WORLD SPECIFIC SYSTEM INSTRUCTION - ${sessionBook.book_title || 'Active World'}]\n${sessionBook.book_instruction.trim()}`;
-    }
-    if (formattedContext) {
-      fullSystemInstruction += `\n${formattedContext}`;
-    }
+    // Tier 0: Global Core - Completely Static across ALL requests
+    const tier0GlobalCore = TIER_0_GLOBAL_CORE;
+
+    // Tier 1: World Core Rules - Static/Append-Only per active world
+    const tier1WorldCore = sessionBook?.book_instruction?.trim()
+      ? `[WORLD CORE RULES - ${sessionBook.book_title || 'Active Chronicle'}]\n${sessionBook.book_instruction.trim()}`
+      : `[WORLD CORE RULES - Default Invariants]\nMaintain logical causality, physical laws, and continuity across chronicle events.`;
+
+    const fullStaticSystemInstruction = `${tier0GlobalCore}\n\n${tier1WorldCore}`;
 
     const modelLimit = getModelContextLimit(model);
     const sessionThreshold = req.body.contextRollingThreshold !== undefined 
@@ -489,7 +502,10 @@ app.post('/api/chat/stream', optionalAuth, async (req, res) => {
       originalCount,
       keptCount,
       totalTokens
-    } = applyRollingContext(historyRows, fullSystemInstruction, '', effectiveThreshold);
+    } = applyRollingContext(historyRows, fullStaticSystemInstruction, '', effectiveThreshold);
+
+    // Tier 2: Dynamic RAG & User Input (Volatile Suffix) strictly on terminal user message
+    const tier2UserPrompt = RAGEngine.formatTier2Prompt(cleanPrompt, retrievedLore);
 
     const contents = prunedMessages.map(m => ({
       role: m.role === 'user' ? 'user' : 'model',
@@ -497,17 +513,19 @@ app.post('/api/chat/stream', optionalAuth, async (req, res) => {
     }));
     contents.push({
       role: 'user',
-      parts: [{ text: cleanPrompt }]
+      parts: [{ text: tier2UserPrompt }]
     });
 
-    const messages = prunedMessages.map(m => ({
-      role: m.role === 'user' ? 'user' : 'assistant',
-      content: m.content
-    }));
-    messages.push({
-      role: 'user',
-      content: cleanPrompt
-    });
+    // Reconstruct outbound messages with strict 3-tier prefix caching hierarchy
+    const messages = [
+      { role: 'system', content: tier0GlobalCore },
+      { role: 'system', content: tier1WorldCore },
+      ...prunedMessages.map(m => ({
+        role: m.role === 'user' ? 'user' : 'assistant',
+        content: m.content
+      })),
+      { role: 'user', content: tier2UserPrompt }
+    ];
 
     await pool.query(
       `INSERT INTO chat_messages (session_id, role, content, retrieved_lore_ids) VALUES (?, 'user', ?, ?)`,
@@ -521,7 +539,7 @@ app.post('/api/chat/stream', optionalAuth, async (req, res) => {
       requestedModel: model,
       messages,
       contents,
-      systemInstruction: fullSystemInstruction,
+      systemInstruction: fullStaticSystemInstruction,
       generationConfig: {
         temperature: parseFloat(temperature),
         topP: parseFloat(topP),
@@ -569,7 +587,18 @@ app.post('/api/chat/stream', optionalAuth, async (req, res) => {
     res.end();
   } catch (err) {
     console.error('[Stream API Error]:', err);
-    res.write(`event: error\ndata: ${JSON.stringify({ error: err.message })}\n\n`);
+    const errMsg = err.message || 'Stream generation failed';
+    const status = err.status || 0;
+    const lower = errMsg.toLowerCase();
+    const isRateLimit = status === 429 || errMsg.includes('429') || errMsg.includes('EXHAUSTED') || lower.includes('quota') || lower.includes('rate limit');
+    const isAuth = status === 401 || status === 403 || errMsg.includes('API_KEY_INVALID') || lower.includes('unauthorized') || lower.includes('incorrect api key');
+    const errorType = isRateLimit ? 'rate_limit' : (isAuth ? 'auth' : 'server');
+
+    res.write(`event: error\ndata: ${JSON.stringify({
+      error: errMsg,
+      type: errorType,
+      status: status || (isRateLimit ? 429 : (isAuth ? 401 : 500))
+    })}\n\n`);
     res.end();
   }
 });

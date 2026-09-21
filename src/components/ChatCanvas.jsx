@@ -43,7 +43,8 @@ export default function ChatCanvas({
   books = [],
   activeBookId = null,
   onLinkBook,
-  isZenMode = false
+  isZenMode = false,
+  onAbort
 }) {
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [activeLoreInDrawer, setActiveLoreInDrawer] = useState(retrievedLore);
@@ -109,6 +110,8 @@ export default function ChatCanvas({
           setPrompt={setPrompt}
           onSend={onSendChat}
           isLoading={isLoading}
+          isStreaming={isStreaming}
+          onAbort={onAbort}
           model={model}
           setModel={setModel}
           temperature={temperature}

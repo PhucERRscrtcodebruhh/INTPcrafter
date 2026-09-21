@@ -5,9 +5,10 @@ import {
   Sparkles, 
   Cpu, 
   ChevronUp, 
-  ChevronDown,
-  CornerDownLeft,
-  Settings2
+  ChevronDown, 
+  CornerDownLeft, 
+  Settings2,
+  Square
 } from 'lucide-react';
 import { MODEL_SPECS, estimateTokens, formatTokenCount } from '../services/tokenEstimator';
 
@@ -16,6 +17,8 @@ export default function ControlBar({
   setPrompt,
   onSend,
   isLoading,
+  isStreaming = false,
+  onAbort,
   model,
   setModel,
   temperature,
@@ -28,6 +31,8 @@ export default function ControlBar({
   const [showParams, setShowParams] = useState(false);
   const textareaRef = useRef(null);
 
+  const isBusy = isLoading || isStreaming;
+
   // Auto-resize textarea based on input
   useEffect(() => {
     if (textareaRef.current) {
@@ -39,7 +44,7 @@ export default function ControlBar({
   const handleKeyDown = (e) => {
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault();
-      if (!isLoading && prompt.trim()) {
+      if (!isBusy && prompt.trim()) {
         onSend();
       }
     }
@@ -240,33 +245,36 @@ export default function ControlBar({
             value={prompt}
             onChange={(e) => setPrompt(e.target.value)}
             onKeyDown={handleKeyDown}
-            disabled={isLoading}
-            placeholder="Direct the world simulation, describe character actions, or formulate story directives..."
+            disabled={isBusy}
+            placeholder={isBusy ? "World simulation stream active... Use Stop Stream to cancel." : "Direct the world simulation, describe character actions, or formulate story directives..."}
             className="w-full bg-transparent px-2.5 py-1.5 sm:py-2 text-xs text-slate-100 placeholder-slate-600 resize-none focus:outline-none leading-relaxed max-h-48"
           />
 
           <div className="p-1 sm:p-1.5 shrink-0">
-            <button
-              onClick={onSend}
-              disabled={isLoading || !prompt.trim()}
-              className={`flex items-center space-x-1 px-2.5 py-1 sm:py-1.5 rounded text-xs font-semibold transition-all ${
-                isLoading || !prompt.trim()
-                  ? 'bg-slate-800 text-slate-500 cursor-not-allowed border border-slate-700/50'
-                  : 'bg-cyan-400 hover:bg-cyan-300 text-black shadow-glow-cyan-sm cursor-pointer'
-              }`}
-            >
-              {isLoading ? (
-                <>
-                  <div className="w-3 h-3 border-2 border-black border-t-transparent rounded-full animate-spin" />
-                  <span>Simulating...</span>
-                </>
-              ) : (
-                <>
-                  <span>Send</span>
-                  <CornerDownLeft size={12} />
-                </>
-              )}
-            </button>
+            {isBusy ? (
+              <button
+                onClick={onAbort}
+                type="button"
+                className="flex items-center space-x-1 px-2.5 py-1 sm:py-1.5 rounded text-xs font-semibold bg-rose-950/80 hover:bg-rose-900 text-rose-300 border border-rose-500/50 shadow-glow-rose-sm cursor-pointer transition-all animate-fadeIn"
+                title="Hủy quá trình stream"
+              >
+                <Square size={11} className="fill-current text-rose-400" />
+                <span>{isStreaming ? 'Stop' : 'Cancel'}</span>
+              </button>
+            ) : (
+              <button
+                onClick={onSend}
+                disabled={!prompt.trim()}
+                className={`flex items-center space-x-1 px-2.5 py-1 sm:py-1.5 rounded text-xs font-semibold transition-all ${
+                  !prompt.trim()
+                    ? 'bg-slate-800 text-slate-500 cursor-not-allowed border border-slate-700/50'
+                    : 'bg-cyan-400 hover:bg-cyan-300 text-black shadow-glow-cyan-sm cursor-pointer'
+                }`}
+              >
+                <span>Send</span>
+                <CornerDownLeft size={12} />
+              </button>
+            )}
           </div>
         </div>
       </div>

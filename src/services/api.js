@@ -91,7 +91,7 @@ export const api = {
     body: JSON.stringify(payload),
   }),
 
-  sendChatStream: async (payload, { onRag, onChunk, onDone, onError }) => {
+  sendChatStream: async (payload, { onRag, onChunk, onDone, onError, signal }) => {
     try {
       const token = localStorage.getItem('storycontainer_token');
       const headers = { 'Content-Type': 'application/json' };
@@ -101,6 +101,7 @@ export const api = {
         method: 'POST',
         headers,
         body: JSON.stringify(payload),
+        signal,
       });
 
       if (!response.ok) {
@@ -110,7 +111,10 @@ export const api = {
           window.dispatchEvent(new Event('auth:logout'));
         }
         const errorData = await response.json().catch(() => ({}));
-        throw new Error(errorData.error || `HTTP error ${response.status}`);
+        const err = new Error(errorData.error || `HTTP error ${response.status}`);
+        err.status = response.status;
+        err.type = response.status === 429 ? 'rate_limit' : (response.status === 401 ? 'auth' : 'server');
+        throw err;
       }
 
       const reader = response.body.getReader();
@@ -123,28 +127,40 @@ export const api = {
 
         buffer += decoder.decode(value, { stream: true });
         const parts = buffer.split('\n\n');
-        buffer = parts.pop();
+        buffer = parts.pop() || '';
 
         for (const part of parts) {
           const lines = part.split('\n');
           let eventType = 'message';
-          let eventData = '';
+          const dataLines = [];
 
           for (const line of lines) {
             if (line.startsWith('event: ')) {
               eventType = line.slice(7).trim();
             } else if (line.startsWith('data: ')) {
-              eventData = line.slice(6).trim();
+              dataLines.push(line.slice(6));
+            } else if (line === 'data:') {
+              dataLines.push('');
             }
           }
+
+          const eventData = dataLines.join('\n').trim();
 
           if (eventData) {
             try {
               const parsed = JSON.parse(eventData);
-              if (eventType === 'rag' && onRag) onRag(parsed);
-              else if (eventType === 'chunk' && onChunk) onChunk(parsed.text);
-              else if (eventType === 'done' && onDone) onDone(parsed);
-              else if (eventType === 'error' && onError) onError(new Error(parsed.error));
+              if (eventType === 'rag' && onRag) {
+                onRag(parsed);
+              } else if (eventType === 'chunk' && onChunk) {
+                onChunk(parsed.text);
+              } else if (eventType === 'done' && onDone) {
+                onDone(parsed);
+              } else if (eventType === 'error') {
+                const streamErr = new Error(parsed.error || 'Generation stream error');
+                streamErr.type = parsed.type || 'server';
+                streamErr.status = parsed.status || 500;
+                if (onError) onError(streamErr);
+              }
             } catch (e) {
               console.warn('Failed to parse SSE event data:', e);
             }
@@ -152,6 +168,10 @@ export const api = {
         }
       }
     } catch (err) {
+      if (err.name === 'AbortError' || err.message?.includes('aborted')) {
+        // Stream aborted gracefully by user or navigation
+        return;
+      }
       if (onError) onError(err);
       else throw err;
     }

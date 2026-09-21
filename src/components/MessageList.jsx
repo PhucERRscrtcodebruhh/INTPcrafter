@@ -27,22 +27,35 @@ import { estimateTokens, formatTokenCount } from '../services/tokenEstimator';
 function extractThinkingAndStory(content, isStillStreaming = false) {
   if (!content) return { thinking: null, story: '', isThinkingOpen: false };
 
-  // Check if content has <thinking>
-  const openTagIdx = content.toLowerCase().indexOf('<thinking>');
+  const lower = content.toLowerCase();
+  let openTag = '';
+  let closeTag = '';
+  let openTagIdx = -1;
+
+  if (lower.includes('<thinking>')) {
+    openTag = '<thinking>';
+    closeTag = '</thinking>';
+    openTagIdx = lower.indexOf('<thinking>');
+  } else if (lower.includes('<think>')) {
+    openTag = '<think>';
+    closeTag = '</think>';
+    openTagIdx = lower.indexOf('<think>');
+  }
+
   if (openTagIdx === -1) {
     return { thinking: null, story: content, isThinkingOpen: false };
   }
 
-  const closeTagIdx = content.toLowerCase().indexOf('</thinking>');
+  const closeTagIdx = lower.indexOf(closeTag, openTagIdx + openTag.length);
   if (closeTagIdx === -1) {
     // Thinking is currently active/streaming
-    const thinking = content.slice(openTagIdx + 10).trim();
+    const thinking = content.slice(openTagIdx + openTag.length).trim();
     return { thinking, story: '', isThinkingOpen: true };
   }
 
   // Both open and close tags present
-  const thinking = content.slice(openTagIdx + 10, closeTagIdx).trim();
-  const story = (content.slice(0, openTagIdx) + content.slice(closeTagIdx + 11)).trim();
+  const thinking = content.slice(openTagIdx + openTag.length, closeTagIdx).trim();
+  const story = (content.slice(0, openTagIdx) + content.slice(closeTagIdx + closeTag.length)).trim();
   return { thinking, story, isThinkingOpen: false };
 }
 
@@ -113,7 +126,8 @@ const MessageItem = memo(function MessageItem({
   onOpenLoreDrawer,
   onSelectLoreEntry,
   onCopy,
-  isCopied
+  isCopied,
+  isBusy = false
 }) {
   const isUser = msg.role === 'user';
   const msgTokens = estimateTokens(msg.content);
@@ -178,7 +192,8 @@ const MessageItem = memo(function MessageItem({
             {/* Edit Button */}
             <button
               onClick={() => onStartEdit(msg)}
-              className="p-1 rounded hover:bg-cyber-850 text-slate-400 hover:text-cyan-300 transition-colors"
+              disabled={isBusy}
+              className="p-1 rounded hover:bg-cyber-850 text-slate-400 hover:text-cyan-300 transition-colors disabled:opacity-30 disabled:cursor-not-allowed"
               title={isUser ? "Sửa prompt này" : "Chỉnh sửa nội dung truyện"}
             >
               <Edit3 size={13} />
@@ -187,7 +202,8 @@ const MessageItem = memo(function MessageItem({
             {/* Regenerate Button */}
             <button
               onClick={() => onRegenerateMessage && onRegenerateMessage(msg)}
-              className="p-1 rounded hover:bg-cyber-850 text-slate-400 hover:text-cyan-300 transition-colors"
+              disabled={isBusy}
+              className="p-1 rounded hover:bg-cyber-850 text-slate-400 hover:text-cyan-300 transition-colors disabled:opacity-30 disabled:cursor-not-allowed"
               title={isUser ? "Chạy lại prompt này (Regenerate)" : "Tạo lại câu trả lời (Regenerate)"}
             >
               <RotateCcw size={13} />
@@ -196,7 +212,8 @@ const MessageItem = memo(function MessageItem({
             {/* Delete Button */}
             <button
               onClick={() => onDeleteMessage && onDeleteMessage(msg.id, isUser)}
-              className="p-1 rounded hover:bg-cyber-850 text-slate-400 hover:text-rose-400 transition-colors"
+              disabled={isBusy}
+              className="p-1 rounded hover:bg-cyber-850 text-slate-400 hover:text-rose-400 transition-colors disabled:opacity-30 disabled:cursor-not-allowed"
               title={isUser ? "Xóa prompt này" : "Xóa câu trả lời này"}
             >
               <Trash2 size={13} />
@@ -324,7 +341,8 @@ const MessageItem = memo(function MessageItem({
             <div className="flex items-center space-x-3 text-[11px] text-slate-500">
               <button
                 onClick={() => onStartEdit(msg)}
-                className="hover:text-cyan-300 flex items-center space-x-1 transition-colors"
+                disabled={isBusy}
+                className="hover:text-cyan-300 flex items-center space-x-1 transition-colors disabled:opacity-30 disabled:cursor-not-allowed"
                 title={isUser ? "Sửa prompt" : "Sửa văn bản"}
               >
                 <Edit3 size={11} />
@@ -333,7 +351,8 @@ const MessageItem = memo(function MessageItem({
 
               <button
                 onClick={() => onRegenerateMessage && onRegenerateMessage(msg)}
-                className="hover:text-cyan-300 flex items-center space-x-1 transition-colors"
+                disabled={isBusy}
+                className="hover:text-cyan-300 flex items-center space-x-1 transition-colors disabled:opacity-30 disabled:cursor-not-allowed"
                 title="Chạy lại câu trả lời"
               >
                 <RotateCcw size={11} />
@@ -342,7 +361,8 @@ const MessageItem = memo(function MessageItem({
 
               <button
                 onClick={() => onDeleteMessage && onDeleteMessage(msg.id, isUser)}
-                className="hover:text-rose-400 flex items-center space-x-1 transition-colors"
+                disabled={isBusy}
+                className="hover:text-rose-400 flex items-center space-x-1 transition-colors disabled:opacity-30 disabled:cursor-not-allowed"
                 title={isUser ? "Xóa prompt" : "Xóa tin nhắn"}
               >
                 <Trash2 size={11} />
@@ -380,6 +400,7 @@ const MessageItem = memo(function MessageItem({
     prev.isEditing === next.isEditing &&
     prev.editingContent === next.editingContent &&
     prev.isCopied === next.isCopied &&
+    prev.isBusy === next.isBusy &&
     prev.msg.retrievedLore === next.msg.retrievedLore
   );
 });
@@ -503,6 +524,8 @@ export default function MessageList({
     }
   }, [editingContent, onEditMessage]);
 
+  const isBusy = isLoading || isStreaming;
+
   // Determine pruned slice
   const totalCount = messages.length;
   const isPruned = isPruningEnabled && totalCount > displayLimit;
@@ -528,24 +551,14 @@ export default function MessageList({
           StoryContainer Studio // Ready
         </h2>
         <p className="text-xs text-slate-400 max-w-md mb-6 leading-relaxed">
-          The deterministic world simulation matrix is online. Enter your scene prompt, character action, or world event below. The INTP RAG engine will automatically retrieve canon laws and character constraints from the Lorebook, running deep cognitive checks and LaTeX equations inside &lt;thinking&gt; before streaming narrative prose with real-time typing.
+          DeepSeek & Gemini Multi-Provider Story Architecture with Deterministic INTP World Simulator. Formulate your prompt below or seed an opening scene.
         </p>
-        <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 max-w-lg w-full text-left text-xs">
-          <div className="p-3 rounded bg-cyber-900/80 border border-slate-800 text-slate-400">
-            <span className="text-cyan-400 font-semibold block mb-1">Character Continuity:</span>
-            "Kaelen Vance inspects the aetheric conduits in Sector 07..."
-          </div>
-          <div className="p-3 rounded bg-cyber-900/80 border border-slate-800 text-slate-400">
-            <span className="text-purple-400 font-semibold block mb-1">Magic Invariants & LaTeX:</span>
-            "Calculate the resonant flux dissipation $\Delta \Phi = \int \omega(t) dt$ when tapping ambient aether."
-          </div>
-        </div>
       </div>
     );
   }
 
   return (
-    <div className="flex-1 overflow-y-auto p-2 sm:p-2.5 space-y-2">
+    <div className="flex-1 overflow-y-auto p-3 sm:p-4 space-y-4 scrollbar-thin scrollbar-thumb-cyan-500/20">
       {/* Chat Pruning Banner (chat.gemini.com Optimization) */}
       {isPruned && (
         <div className="p-2.5 rounded-lg bg-cyber-950 border border-cyan-500/20 text-xs flex flex-wrap items-center justify-between gap-2 text-slate-400 animate-fadeIn select-none">
@@ -578,6 +591,7 @@ export default function MessageList({
           key={msg.id || idx}
           msg={msg}
           idx={idx}
+          isBusy={isBusy}
           isEditing={editingId === msg.id}
           editingContent={editingContent}
           onStartEdit={handleStartEdit}
