@@ -11,10 +11,10 @@ export const MODEL_CONTEXT_LIMITS = {
   'gemma-4-26b-a4b-it': 131072,
 
   // DeepSeek Flagship Series (128K context window)
-  'deepseek-v4-pro': 131072,
-  'deepseek-v4-flash': 131072,
+  'deepseek-v4-pro': 1048576‎,
+  'deepseek-v4-flash': 1048576‎,
   'deepseek-v3.2': 131072,
-  'deepseek-chat': 131072,
+  'deepseek-chat': 1048576‎,
   'deepseek-r1-zero': 131072,
   'deepseek-r1-0528': 131072,
   'deepseek-r1': 131072,
