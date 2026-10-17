@@ -32,6 +32,26 @@ export default {
         'glow-cyan-sm': '0 0 8px rgba(0, 240, 255, 0.2)',
         'glow-amber': '0 0 15px rgba(255, 170, 0, 0.25)',
         'glow-emerald': '0 0 15px rgba(0, 255, 170, 0.25)',
+        'glow-emerald-sm': '0 0 8px rgba(0, 255, 170, 0.2)',
+        'glow-rose-sm': '0 0 8px rgba(244, 63, 94, 0.25)',
+      },
+      spacing: {
+        13: '3.25rem',
+        15: '3.75rem',
+      },
+      keyframes: {
+        fadeIn: {
+          '0%': { opacity: '0', transform: 'translateY(2px)' },
+          '100%': { opacity: '1', transform: 'translateY(0)' },
+        },
+        slideInLeft: {
+          '0%': { opacity: '0', transform: 'translateX(-16px)' },
+          '100%': { opacity: '1', transform: 'translateX(0)' },
+        },
+      },
+      animation: {
+        fadeIn: 'fadeIn 0.18s ease-out',
+        slideInLeft: 'slideInLeft 0.2s ease-out',
       },
       backdropBlur: {
         xs: '2px',

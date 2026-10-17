@@ -51,6 +51,17 @@ const PROVIDERS = [
     endpoint: 'https://openrouter.ai/api/v1',
     docsUrl: 'https://openrouter.ai/keys'
   },
+  {
+    id: 'groq',
+    name: 'Groq',
+    badge: 'LPU Fast Inference',
+    icon: '⚡',
+    color: 'text-orange-400 border-orange-500/40 bg-orange-950/40',
+    placeholder: 'gsk_... (Groq API Key)',
+    endpoint: 'https://api.groq.com/openai/v1',
+    docsUrl: 'https://console.groq.com/keys'
+  },
+
   { 
     id: 'huggingface', 
     name: 'Hugging Face', 
@@ -252,7 +263,7 @@ export default function KeyPoolManager() {
       </div>
 
       {/* Provider Selector Tabs */}
-      <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
+      <div className="grid grid-cols-2 sm:grid-cols-3 xl:grid-cols-5 gap-2">
         {PROVIDERS.map(prov => {
           const isSelected = activeProvider === prov.id;
           return (

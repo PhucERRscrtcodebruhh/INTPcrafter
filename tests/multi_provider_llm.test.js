@@ -46,6 +46,16 @@ async function runTests() {
     if (detectProviderFromModel('openrouter/auto') !== 'openrouter') throw new Error('Failed to detect OpenRouter');
     if (detectProviderFromModel('huggingface/deepseek-ai/DeepSeek-R1') !== 'huggingface') throw new Error('Failed to detect HuggingFace');
     if (detectProviderFromModel('gemini-3.8-flash') !== 'gemini') throw new Error('Failed to detect Gemini');
+    if (detectProviderFromModel('llama-3.1-8b-instant') !== 'groq') throw new Error('Failed to detect Groq llama-3.1-8b-instant');
+    if (detectProviderFromModel('openai/gpt-oss-120b') !== 'groq') throw new Error('Failed to detect Groq gpt-oss-120b');
+    if (detectProviderFromModel('qwen/qwen3.8-27b') !== 'groq') throw new Error('Failed to detect Groq Qwen preview');
+    if (detectProviderFromModel('meta-llama/llama-3.3-70b-instruct') !== 'openrouter') throw new Error('OpenRouter Llama must not be rerouted to Groq');
+
+    if (resolveModelForProvider('groq/llama-3.3-70b-versatile', 'groq') !== 'llama-3.3-70b-versatile') {
+      throw new Error('Failed to strip groq/ prefix from Groq model id');
+    }
+    if (getModelContextLimit('llama-3.3-70b-versatile') !== 131072) throw new Error('Groq context limit missing');
+    if (getModelContextLimit('gemma-2-9b') !== 8192) throw new Error('Gemma 2 context limit missing');
 
     if (resolveModelForProvider('deepseek-v4-pro', 'deepseek') !== 'deepseek-chat') throw new Error('Failed to map deepseek-v4-pro to deepseek-chat');
     if (resolveModelForProvider('deepseek-r1', 'deepseek') !== 'deepseek-reasoner') throw new Error('Failed to map deepseek-r1 to deepseek-reasoner');

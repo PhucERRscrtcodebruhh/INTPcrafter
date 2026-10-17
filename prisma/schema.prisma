@@ -1,60 +1,169 @@
+// ============================================================================
+// STORYCONTAINER ENGINE — Prisma schema MIRROR
+// ----------------------------------------------------------------------------
+// !!! SOURCE OF TRUTH = server/db.js (initDatabase) !!!
+//
+// The running server uses mysql2 + server/db.js::initDatabase() to create/verify
+// every table. Prisma is NOT a dependency of this project and no runtime code
+// imports @prisma/client. This file exists only to mirror the real schema for
+// documentation, IDE tooling and future migrations.
+//
+// BEFORE you ever run `npx prisma db push` / `migrate`:
+//   1. `npm ls prisma @prisma/client`  -> currently EMPTY (Prisma is not installed)
+//   2. Add DATABASE_URL to .env        -> Prisma reads DATABASE_URL, the app reads DB_*
+//   3. `npx prisma db pull` first and diff it against this file, because
+//      `db push` ALTERs/drops columns-indexes to match this file and can destroy
+//      data on a database that is already populated.
+//
+// Rules encoded below (matching server/db.js):
+//   * every data table carries user_id  (strict user scoping)
+//   * User.email is NULLABLE but UNIQUE -> legacy/pre-Gmail rows may exist;
+//     the API layer (server/auth.js) still requires @gmail.com for signup.
+// ============================================================================
+
+generator client {
+  provider        = "prisma-client-js"
+  previewFeatures = ["fullTextIndex"]
+}
+
 datasource db {
   provider = "mysql"
   url      = env("DATABASE_URL")
 }
 
-generator client {
-  provider = "prisma-client-js"
+enum ChatRole {
+  user
+  model
+  system
+}
+
+model User {
+  id           Int      @id @default(autoincrement())
+  // NULLABLE on purpose: a UNIQUE key allows many NULLs (MariaDB), so legacy rows
+  // cannot collide, while Gmail-only registration is enforced in server/auth.js.
+  email        String?  @unique @db.VarChar(190)
+  username     String?  @unique @db.VarChar(50)
+  passwordHash String   @map("password_hash") @db.VarChar(255)
+  displayName  String   @default("") @map("display_name") @db.VarChar(100)
+  avatarData   String?  @map("avatar_data") @db.LongText
+  language     String   @default("vi") @db.VarChar(10)
+  authProvider String   @default("gmail") @map("auth_provider") @db.VarChar(20)
+  createdAt    DateTime @default(now()) @map("created_at")
+  updatedAt    DateTime @default(now()) @updatedAt @map("updated_at")
+
+  books       LoreBook[]
+  sessions    ChatSession[]
+  messages    ChatMessage[]
+  loreEntries LoreEntry[]
+  apiKeys     UserApiKey[]
+  graphStates GraphState[]
+  connections NodeConnection[]
+
+  @@map("users")
+}
+
+model SystemConfig {
+  keyName String  @id @map("key_name") @db.VarChar(64)
+  value   String? @db.LongText
+
+  @@map("system_configs")
 }
 
 model LoreBook {
-  id                Int         @id @default(autoincrement())
-  userId            Int?        @map("user_id")
-  title             String      @db.VarChar(255)
-  description       String?     @db.Text
-  systemInstruction String?     @map("system_instruction") @db.LongText
-  language          String?     @default("vi") @db.VarChar(20)
-  createdAt         DateTime    @default(now()) @map("created_at")
-  loreEntries       LoreEntry[]
-  graphState        GraphState?
+  id                Int       @id @default(autoincrement())
+  userId            Int       @map("user_id")
+  title             String    @db.VarChar(255)
+  description       String?   @db.Text
+  systemInstruction String?   @map("system_instruction") @db.LongText
+  language          String    @default("vi") @db.VarChar(20)
+  createdAt         DateTime  @default(now()) @map("created_at")
+  updatedAt         DateTime  @default(now()) @updatedAt @map("updated_at")
 
+  user        User          @relation(fields: [userId], references: [id], onDelete: Cascade)
+  entries     LoreEntry[]
+  sessions    ChatSession[]
+
+  @@index([userId], name: "idx_books_user")
   @@map("lore_books")
 }
 
 model LoreEntry {
-  id            Int         @id @default(autoincrement())
-  worldId       String?     @map("world_id") @db.VarChar(255)
-  bookId        Int?        @map("book_id")
-  title         String      @db.VarChar(255)
-  category      String      @default("General") @db.VarChar(50) // Character, MagicSystem, Location, Event, General
-  aliases       Json?       // Array of string aliases or string
-  content       String?     @map("content") @db.LongText // Canonical lore details
-  canonicalLore String?     @map("canonical_lore") @db.LongText
-  rules         String?     @db.Text
-  metadata      Json?       // Polymorphic fields based on category
-  createdAt     DateTime    @default(now()) @map("created_at")
-  updatedAt     DateTime    @default(now()) @updatedAt @map("updated_at")
-  loreBook      LoreBook?   @relation(fields: [bookId], references: [id], onDelete: Cascade)
+  id        Int      @id @default(autoincrement())
+  userId    Int      @map("user_id")
+  bookId    Int      @map("book_id")
+  worldId   String?  @map("world_id") @db.VarChar(255)
+  category  String   @default("General") @db.VarChar(50) // Character | MagicSystem | Location | Faction | Event | General
+  title     String   @db.VarChar(255)
+  // Aliases are stored as canonical CSV (never JSON) so alias matching cannot break.
+  aliases   String   @db.Text
+  content   String   @db.LongText
+  rules     String   @db.Text
+  metadata  Json?
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @default(now()) @updatedAt @map("updated_at")
 
+  user User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  book LoreBook @relation(fields: [bookId], references: [id], onDelete: Cascade)
+
+  @@index([userId, bookId], name: "idx_lore_scope")
   @@index([worldId, category], name: "idx_lore_world_category")
-  @@index([bookId, category], name: "idx_lore_book_category")
-  @@index([title], name: "idx_lore_title")
+  @@fulltext([title, aliases, content], name: "idx_lore_fts")
   @@map("lore_entries")
 }
 
-model GraphState {
-  id        String    @id @default(uuid())
-  worldId   String    @unique @map("world_id") @db.VarChar(255)
-  nodes     Json      // React Flow node positions and UI state
-  edges     Json      // React Flow connection edges
-  updatedAt DateTime  @default(now()) @updatedAt @map("updated_at")
+model ChatSession {
+  id               String   @id @db.VarChar(64)
+  userId           Int      @map("user_id")
+  bookId           Int?     @map("book_id")
+  title            String   @db.VarChar(255)
+  rollingThreshold Int      @default(32768) @map("rolling_threshold")
+  createdAt        DateTime @default(now()) @map("created_at")
+  updatedAt        DateTime @default(now()) @updatedAt @map("updated_at")
 
-  @@index([worldId], name: "idx_graph_world")
+  user     User          @relation(fields: [userId], references: [id], onDelete: Cascade)
+  book     LoreBook?     @relation(fields: [bookId], references: [id], onDelete: SetNull)
+  messages ChatMessage[]
+
+  @@index([userId], name: "idx_sessions_user")
+  @@index([bookId], name: "idx_sessions_book")
+  @@map("chat_sessions")
+}
+
+model ChatMessage {
+  id               Int      @id @default(autoincrement())
+  sessionId        String   @map("session_id") @db.VarChar(64)
+  userId           Int      @map("user_id")
+  role             ChatRole
+  content          String   @db.LongText
+  retrievedLoreIds String   @default("") @map("retrieved_lore_ids") @db.VarChar(255)
+  createdAt        DateTime @default(now()) @map("created_at")
+
+  session ChatSession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+  user    User        @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([sessionId, id], name: "idx_messages_session")
+  @@index([userId], name: "idx_messages_user")
+  @@map("chat_messages")
+}
+
+
+model GraphState {
+  id        String   @id @default(uuid()) @db.VarChar(64)
+  userId    Int      @map("user_id")
+  worldId   String   @map("world_id") @db.VarChar(255)
+  nodes     Json
+  edges     Json
+  updatedAt DateTime @default(now()) @updatedAt @map("updated_at")
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, worldId], name: "uq_graph_scope")
   @@map("graph_states")
 }
 
 model NodeConnection {
-  id           String   @id @default(uuid())
+  id           String   @id @default(uuid()) @db.VarChar(64)
+  userId       Int      @map("user_id")
   worldId      String   @map("world_id") @db.VarChar(255)
   sourceNodeId String   @map("source_node_id") @db.VarChar(255)
   targetNodeId String   @map("target_node_id") @db.VarChar(255)
@@ -63,13 +172,15 @@ model NodeConnection {
   data         Json?
   createdAt    DateTime @default(now()) @map("created_at")
 
-  @@index([worldId], name: "idx_node_conn_world")
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, worldId], name: "idx_node_conn_scope")
   @@map("node_connections")
 }
 
 model ApiKeysVault {
   id               Int      @id @default(autoincrement())
-  provider         String   @default("gemini") @db.VarChar(32) // gemini, deepseek, openrouter, huggingface
+  provider         String   @default("gemini") @db.VarChar(32)
   baseUrl          String?  @map("base_url") @db.VarChar(255)
   keyHash          String   @map("key_hash") @db.VarChar(64)
   encryptedKey     String   @map("encrypted_key") @db.Text
@@ -83,14 +194,14 @@ model ApiKeysVault {
   errorMsg         String?  @map("error_msg") @db.Text
   createdAt        DateTime @default(now()) @map("created_at")
 
-  @@unique([provider, keyHash], name: "unique_provider_key")
+  @@unique([provider, keyHash], name: "uq_provider_key_hash")
   @@map("api_keys_vault")
 }
 
 model UserApiKey {
   id               Int      @id @default(autoincrement())
   userId           Int      @map("user_id")
-  provider         String   @default("gemini") @db.VarChar(32) // gemini, deepseek, openrouter, huggingface
+  provider         String   @default("gemini") @db.VarChar(32)
   baseUrl          String?  @map("base_url") @db.VarChar(255)
   keyHash          String   @map("key_hash") @db.VarChar(64)
   encryptedKey     String   @map("encrypted_key") @db.Text
@@ -104,32 +215,9 @@ model UserApiKey {
   errorMsg         String?  @map("error_msg") @db.Text
   createdAt        DateTime @default(now()) @map("created_at")
 
-  @@unique([userId, provider, keyHash], name: "unique_user_provider_key")
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, provider, keyHash], name: "uq_user_provider_key")
+  @@index([userId, provider], name: "idx_user_keys_user")
   @@map("user_api_keys")
 }
-
-model ChatSession {
-  id               String        @id @db.VarChar(64)
-  userId           Int?          @map("user_id")
-  bookId           Int?          @map("book_id")
-  title            String        @db.VarChar(255)
-  rollingThreshold Int?          @default(32768) @map("rolling_threshold")
-  createdAt        DateTime      @default(now()) @map("created_at")
-  messages         ChatMessage[]
-
-  @@map("chat_sessions")
-}
-
-model ChatMessage {
-  id               Int          @id @default(autoincrement())
-  sessionId        String       @map("session_id") @db.VarChar(64)
-  role             String       @db.VarChar(20) // user, model, system
-  content          String       @db.LongText
-  retrievedLoreIds String?      @default("") @map("retrieved_lore_ids") @db.VarChar(255)
-  createdAt        DateTime     @default(now()) @map("created_at")
-  session          ChatSession  @relation(fields: [sessionId], references: [id], onDelete: Cascade)
-
-  @@index([sessionId], name: "idx_session_id")
-  @@map("chat_messages")
-}
-

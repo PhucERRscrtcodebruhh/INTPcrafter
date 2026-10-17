@@ -1,6 +1,7 @@
-import { TIER_0_GLOBAL_CORE } from '../server/app.js';
+import { TIER_0_GLOBAL_CORE, buildStableRequestEnvelope } from '../server/app.js';
 import { RAGEngine } from '../server/ragEngine.js';
 import { ProviderKeyPool } from '../server/llmProviders.js';
+import { applyRollingContext, resetRollingAnchors, estimateTokens } from '../server/tokenUtils.js';
 
 async function runTests() {
   console.log('=== TEST SUITE: 3-TIER PREFIX CACHING & ERROR ISOLATION ===\n');
@@ -80,7 +81,72 @@ async function runTests() {
   }
   console.log('✓ Tier 2 empty RAG fallback verified.\n');
 
-  // Test 4: Provider Key Pool Error Disambiguation (429 Rate Limit vs False Invalid)
+  // Test 4: Stable prompt envelope should avoid duplicated system blocks to maximize shared prefix cache
+  console.log('[TEST 4] Verifying stable prompt envelope for cacheability...');
+  const tier1Rule = '[WORLD CORE RULES - Test Chronicle]\nKeep continuity.';
+  const tier2Prompt = 'The kingdom falls into darkness.';
+  const payload = buildStableRequestEnvelope({
+    historyMessages: [
+      { role: 'user', content: 'Earlier scene' },
+      { role: 'assistant', content: 'Earlier response' }
+    ],
+    tier0GlobalCore: TIER_0_GLOBAL_CORE,
+    tier1WorldCore: tier1Rule,
+    tier2UserPrompt: tier2Prompt
+  });
+
+  if (!payload.systemInstruction.includes(TIER_0_GLOBAL_CORE) || !payload.systemInstruction.includes(tier1Rule)) {
+    throw new Error('Stable request envelope must include one combined static system instruction.');
+  }
+  if (payload.messages.some(m => m.role === 'system')) {
+    throw new Error('Stable request envelope must not duplicate system blocks inside message array.');
+  }
+  if (!payload.messages.at(-1)?.content.includes(tier2Prompt)) {
+    throw new Error('Tier 2 user prompt must remain at the end of request messages.');
+  }
+  console.log('✓ Stable prompt envelope preserves a single reusable prefix and avoids duplicate system blocks.\n');
+
+  // Test 5: Anchored rolling window preserves the request prefix between turns
+  console.log('[TEST 5] Verifying anchored rolling preserves prefix cache stability...');
+  resetRollingAnchors();
+  const anchorSession = 'test:prefix-cache-stability';
+  const anchorBudget = 500;
+  const history = [];
+  let pinnedAnchor = null;
+  let anchorMoves = 0;
+
+  for (let turn = 1; turn <= 16; turn += 1) {
+    history.push({ id: turn * 2 - 1, role: 'user', content: `turn ${turn} prompt ` + 'u'.repeat(50) });
+    history.push({ id: turn * 2, role: 'model', content: `turn ${turn} reply ` + 'm'.repeat(50) });
+
+    const result = applyRollingContext(history, TIER_0_GLOBAL_CORE, '', anchorBudget, { sessionKey: anchorSession });
+    if (pinnedAnchor !== null && result.anchorId !== pinnedAnchor) {
+      anchorMoves += 1;
+      if (result.prunedMessages[0]?.role !== 'user') {
+        throw new Error('A rolled window must start on a user turn.');
+      }
+      const keptTokens = result.prunedMessages.reduce((sum, m) => sum + estimateTokens(m.content) + 4, 0);
+      if (keptTokens > anchorBudget) {
+        throw new Error('Rolled window exceeds the history budget.');
+      }
+    }
+    if (pinnedAnchor === null) pinnedAnchor = result.anchorId;
+    pinnedAnchor = result.anchorId;
+
+    if (result.prunedMessages.at(-1)?.id !== history.at(-1).id) {
+      throw new Error('The newest message must always be retained.');
+    }
+  }
+
+  if (anchorMoves === 0) {
+    throw new Error('Expected the anchored window to roll at least once over 16 long turns.');
+  }
+  if (anchorMoves > 8) {
+    throw new Error(`Anchored rolling should batch evictions, but moved ${anchorMoves} times.`);
+  }
+  console.log(`✓ Prefix-preserving anchor stayed pinned between batch rolls (${anchorMoves} roll(s) over 16 turns).\n`);
+
+  // Test 6: Provider Key Pool Error Disambiguation (429 Rate Limit vs False Invalid)
   console.log('[TEST 4] Testing Error Categorization in ProviderKeyPool...');
   const pool = new ProviderKeyPool(0, 'deepseek');
   pool.keys = [
@@ -113,7 +179,7 @@ async function runTests() {
   }
   console.log('✓ 400 Bad Request parameter error is NOT falsely classified as Invalid API Key or 429.\n');
 
-  // Test 5: Genuine 401 Auth Error
+  // Test 6: Genuine 401 Auth Error
   const mock401Error = new Error('Provider API Error (401): {"error":{"message":"Authentication failed: Incorrect API key provided"}}');
   mock401Error.status = 401;
   const isAuth401 = mock401Error.status === 401 || mock401Error.message.toLowerCase().includes('incorrect api key');
@@ -122,7 +188,7 @@ async function runTests() {
   }
   console.log('✓ Genuine 401 Auth Error is correctly identified.\n');
 
-  // Test 6: Genuine 429 Rate Limit
+  // Test 7: Genuine 429 Rate Limit
   const mock429Error = new Error('Provider API Error (429): {"error":{"message":"Rate limit reached for requests per minute"}}');
   mock429Error.status = 429;
   const is429True = mock429Error.status === 429 || mock429Error.message.toLowerCase().includes('rate limit');

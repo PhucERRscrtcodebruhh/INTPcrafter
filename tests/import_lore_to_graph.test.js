@@ -1,18 +1,20 @@
-import { initDatabase, pool } from '../server/db.js';
+import { pool } from '../server/db.js';
+import { bootstrapTestEnv, createGmailTestUser, teardownTestEnv } from './helpers/testBootstrap.js';
 
 async function runTests() {
   console.log('=== TEST SUITE: IMPORT FROM LOREBOOK TO GRAPH CANVAS ===\n');
+  const createdUsers = [];
 
   try {
-    // 1. Initialize DB
+    // 1. Initialize DB + seeded fixture (schema, dev account, owned test world)
     console.log('[TEST 1] Initializing Database & Seed Data...');
-    await initDatabase();
+    await bootstrapTestEnv();
 
-    // Create a dedicated test book
-    const [bookRes] = await pool.query(
-      `INSERT INTO lore_books (title, description, language) VALUES ('Test World for Import', 'World created for testing lore import to graph', 'vi')`
-    );
-    const testBookId = bookRes.insertId;
+    // Create a dedicated, user-owned test world (every book must have an owner)
+    const fixture = await createGmailTestUser('import', { withStarterWorld: false });
+    createdUsers.push(fixture.userId);
+    const testBookId = fixture.bookId;
+    console.log(`  ✓ Owned test world #${testBookId} for ${fixture.email} (no starter canon)`);
 
     // Create 4 polymorphic lore entries for this world
     const entries = [
@@ -71,9 +73,9 @@ async function runTests() {
     const insertedEntryIds = [];
     for (const e of entries) {
       const [r] = await pool.query(
-        `INSERT INTO lore_entries (book_id, world_id, category, title, aliases, rules, content, metadata)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-        [testBookId, String(testBookId), e.category, e.title, e.aliases, e.rules, e.content, e.metadata]
+        `INSERT INTO lore_entries (user_id, book_id, world_id, category, title, aliases, rules, content, metadata)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        [fixture.userId, testBookId, String(testBookId), e.category, e.title, e.aliases, e.rules, e.content, e.metadata]
       );
       insertedEntryIds.push(r.insertId);
     }
@@ -153,30 +155,28 @@ async function runTests() {
     }
     console.log('✓ Successfully mapped all polymorphic lore entries into React Flow canvas nodes.\n');
 
-    // 3. Persist Graph State to MySQL
+    // 3. Persist Graph State to MySQL (user-scoped)
     console.log('[TEST 3] Persisting Imported Graph State to MySQL graph_states table...');
-    const graphId = `graph_${testBookId}`;
+    const graphId = `graph_${fixture.userId}_${testBookId}`;
     const nodesJson = JSON.stringify(canvasNodes);
     const edgesJson = JSON.stringify([]);
 
     await pool.query(
-      `INSERT INTO graph_states (id, world_id, nodes, edges) VALUES (?, ?, ?, ?)
+      `INSERT INTO graph_states (id, user_id, world_id, nodes, edges) VALUES (?, ?, ?, ?, ?)
        ON DUPLICATE KEY UPDATE nodes = VALUES(nodes), edges = VALUES(edges)`,
-      [graphId, String(testBookId), nodesJson, edgesJson]
+      [graphId, fixture.userId, String(testBookId), nodesJson, edgesJson]
     );
 
-    const [savedGraph] = await pool.query(`SELECT * FROM graph_states WHERE world_id = ?`, [String(testBookId)]);
+    const [savedGraph] = await pool.query(`SELECT * FROM graph_states WHERE user_id = ? AND world_id = ?`, [fixture.userId, String(testBookId)]);
     if (savedGraph.length === 0) throw new Error('Failed to find saved graph in DB');
     
     const parsedNodes = typeof savedGraph[0].nodes === 'string' ? JSON.parse(savedGraph[0].nodes) : savedGraph[0].nodes;
     if (parsedNodes.length !== 4) throw new Error('Saved nodes count mismatch: ' + parsedNodes.length);
     console.log('✓ Verified graph state retrieval from MySQL with all 4 imported nodes.\n');
 
-    // 4. Clean up test data
-    console.log('[TEST 4] Cleaning up test book and graph...');
-    await pool.query(`DELETE FROM lore_entries WHERE book_id = ?`, [testBookId]);
-    await pool.query(`DELETE FROM graph_states WHERE world_id = ?`, [String(testBookId)]);
-    await pool.query(`DELETE FROM lore_books WHERE id = ?`, [testBookId]);
+    // 4. Clean up test data (FK cascade removes the owned world, lore and graph state)
+    console.log('[TEST 4] Cleaning up test account, book and graph...');
+    await teardownTestEnv(createdUsers);
     console.log('✓ Test cleanup complete.\n');
 
     console.log('=== ALL LOREBOOK IMPORT TO GRAPH TESTS PASSED! ===');

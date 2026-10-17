@@ -1,18 +1,23 @@
-import React, { useState } from 'react';
-import SessionSidebar from './SessionSidebar';
-import ContextBar from './ContextBar';
+import React, { useState, useEffect } from 'react';
+import { ChevronDown, ChevronUp } from 'lucide-react';
 import MessageList from './MessageList';
-import ControlBar from './ControlBar';
+import BottomHUD from './BottomHUD';
 import LoreDrawer from './LoreDrawer';
+import SessionDrawer from './SessionDrawer';
+import KeyPoolModal from './KeyPoolModal';
+import WorldStateModal from './WorldStateModal';
+import LanguageModal from './LanguageModal';
+import ContextSettingsModal from './ContextSettingsModal';
+import { getModelSpec } from '../services/tokenEstimator';
 
 export default function ChatCanvas({
-  sessions,
+  sessions = [],
   activeSessionId,
   onSelectSession,
   onCreateSession,
   onRenameSession,
   onDeleteSession,
-  messages,
+  messages = [],
   isLoading,
   isStreaming = false,
   streamingText = '',
@@ -28,12 +33,12 @@ export default function ChatCanvas({
   setTopP,
   maxOutputTokens,
   setMaxOutputTokens,
-  currentTokens,
-  rollingThreshold,
+  currentTokens = 0,
+  rollingThreshold = 32768,
   onUpdateRollingThreshold,
-  isRolled,
+  isRolled = false,
   historyStats,
-  retrievedLore,
+  retrievedLore = [],
   loreDrawerOpen,
   setLoreDrawerOpen,
   onNavigateToLorebook,
@@ -44,10 +49,30 @@ export default function ChatCanvas({
   activeBookId = null,
   onLinkBook,
   isZenMode = false,
-  onAbort
+  onAbort,
+  keyStats = [],
+  currentUser = null,
+  language = 'vi',
+  onLanguageChange,
+  isSummaryReq = false,
+  setIsSummaryReq
 }) {
-  const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
-  const [activeLoreInDrawer, setActiveLoreInDrawer] = useState(retrievedLore);
+  // Modal / Drawer state toggles
+  const [isSessionDrawerOpen, setIsSessionDrawerOpen] = useState(false);
+  const [isKeyPoolModalOpen, setIsKeyPoolModalOpen] = useState(false);
+  const [isWorldStateModalOpen, setIsWorldStateModalOpen] = useState(false);
+  const [isLanguageModalOpen, setIsLanguageModalOpen] = useState(false);
+  const [isContextSettingsModalOpen, setIsContextSettingsModalOpen] = useState(false);
+  const [isBottomHudCollapsed, setIsBottomHudCollapsed] = useState(false);
+
+  // Active lore focused inside drawer. Start empty so the drawer falls back to the
+  // live retrieval set instead of freezing whatever was loaded at first render.
+  const [activeLoreInDrawer, setActiveLoreInDrawer] = useState([]);
+
+  // Keep the drawer in sync with the newest RAG retrieval of the active turn.
+  useEffect(() => {
+    setActiveLoreInDrawer(Array.isArray(retrievedLore) ? retrievedLore : []);
+  }, [retrievedLore]);
 
   const handleOpenSpecificLore = (loreItem) => {
     setActiveLoreInDrawer([loreItem]);
@@ -59,38 +84,21 @@ export default function ChatCanvas({
     setLoreDrawerOpen(true);
   };
 
+  const handleToggleLoreDrawer = () => {
+    if (!loreDrawerOpen) {
+      setActiveLoreInDrawer(Array.isArray(retrievedLore) ? retrievedLore : []);
+    }
+    setLoreDrawerOpen(!loreDrawerOpen);
+  };
+
+  const activeKeysCount = keyStats.filter(k => k.status === 'active').length;
+  const spec = getModelSpec(model);
+  const contextLimit = spec?.contextLimit || 1048576;
+
   return (
-    <div className="flex-1 flex h-full overflow-hidden relative">
-      {/* Left Session Sidebar (Hidden in Zen Mode) */}
-      {!isZenMode && (
-        <SessionSidebar
-          sessions={sessions}
-          activeSessionId={activeSessionId}
-          onSelectSession={onSelectSession}
-          onCreateSession={onCreateSession}
-          onRenameSession={onRenameSession}
-          onDeleteSession={onDeleteSession}
-          isCollapsed={sidebarCollapsed}
-          onToggleCollapse={() => setSidebarCollapsed(!sidebarCollapsed)}
-        />
-      )}
-
-      {/* Main Studio Canvas Area */}
-      <div className={`flex-1 flex flex-col h-full overflow-hidden bg-cyber-950 ${isZenMode ? 'w-full max-w-5xl mx-auto' : ''}`}>
-        {/* Token Counter & Context Window Rolling Bar */}
-        <ContextBar
-          currentTokens={currentTokens}
-          activeModel={model}
-          rollingThreshold={rollingThreshold}
-          onUpdateRollingThreshold={onUpdateRollingThreshold}
-          isRolled={isRolled}
-          historyStats={historyStats}
-          books={books}
-          activeBookId={activeBookId}
-          onLinkBook={onLinkBook}
-        />
-
-        {/* Message Stream */}
+    <div className="flex-1 flex flex-col h-full overflow-hidden relative bg-cyber-950 font-mono">
+      {/* Upper Area: Main Chat View (Maximum Screen Space) */}
+      <div className={`flex-1 flex flex-col overflow-hidden w-full ${isZenMode ? 'max-w-4xl mx-auto' : ''}`}>
         <MessageList
           messages={messages}
           isLoading={isLoading}
@@ -102,33 +110,128 @@ export default function ChatCanvas({
           onEditMessage={onEditMessage}
           onDeleteMessage={onDeleteMessage}
           onRegenerateMessage={onRegenerateMessage}
-        />
-
-        {/* Bottom Control Bar */}
-        <ControlBar
-          prompt={prompt}
-          setPrompt={setPrompt}
-          onSend={onSendChat}
-          isLoading={isLoading}
-          isStreaming={isStreaming}
-          onAbort={onAbort}
-          model={model}
-          setModel={setModel}
-          temperature={temperature}
-          setTemperature={setTemperature}
-          topP={topP}
-          setTopP={setTopP}
-          maxOutputTokens={maxOutputTokens}
-          setMaxOutputTokens={setMaxOutputTokens}
+          currentUser={currentUser}
         />
       </div>
 
-      {/* Right Collapsible Lore Drawer */}
+      {/* Bottom Area: collapsible Bottom HUD (Context Donut + Chat Input + 6-Button Dock) */}
+      <div
+        className={`grid shrink-0 relative z-30 transition-[grid-template-rows,opacity] duration-300 ease-out ${
+          isBottomHudCollapsed ? 'grid-rows-[0fr] opacity-0' : 'grid-rows-[1fr] opacity-100'
+        }`}
+      >
+        <div className={`min-h-0 ${isBottomHudCollapsed ? 'overflow-hidden' : 'overflow-visible'}`}>
+          <div
+            className={`transition-transform duration-300 ease-out ${
+              isBottomHudCollapsed ? 'translate-y-full' : 'translate-y-0'
+            }`}
+          >
+            <BottomHUD
+        prompt={prompt}
+        setPrompt={setPrompt}
+        onSend={onSendChat}
+        isLoading={isLoading}
+        isStreaming={isStreaming}
+        onAbort={onAbort}
+        model={model}
+        setModel={setModel}
+        temperature={temperature}
+        setTemperature={setTemperature}
+        topP={topP}
+        setTopP={setTopP}
+        maxOutputTokens={maxOutputTokens}
+        setMaxOutputTokens={setMaxOutputTokens}
+        currentTokens={currentTokens}
+        rollingThreshold={rollingThreshold}
+        isRolled={isRolled}
+        onOpenContextSettings={() => setIsContextSettingsModalOpen(true)}
+        books={books}
+        activeBookId={activeBookId}
+        onLinkBook={onLinkBook}
+        onOpenSessionDrawer={() => setIsSessionDrawerOpen(true)}
+        onOpenLorebook={onNavigateToLorebook}
+        onOpenKeyPool={() => setIsKeyPoolModalOpen(true)}
+        onOpenWorldState={() => setIsWorldStateModalOpen(true)}
+        onToggleLoreContext={handleToggleLoreDrawer}
+        onOpenLanguage={() => setIsLanguageModalOpen(true)}
+        retrievedCount={retrievedLore.length}
+        activeKeysCount={activeKeysCount}
+        totalKeysCount={keyStats.length || 0}
+        sessionsCount={sessions.length}
+        language={language}
+        isSummaryReq={isSummaryReq}
+        setIsSummaryReq={setIsSummaryReq}
+            />
+          </div>
+        </div>
+      </div>
+
+      {/* Pinned Bottom-Right Toggle: collapses the whole dock and stays reachable */}
+      <button
+        type="button"
+        onClick={() => setIsBottomHudCollapsed(prev => !prev)}
+        aria-expanded={!isBottomHudCollapsed}
+        aria-label={isBottomHudCollapsed ? 'Expand bottom dock' : 'Collapse bottom dock'}
+        title={isBottomHudCollapsed ? 'Expand bottom dock' : 'Collapse bottom dock'}
+        className="fixed bottom-2.5 right-3 z-50 w-9 h-9 rounded-lg flex items-center justify-center bg-cyber-950/95 border border-cyan-400/45 text-cyan-300 hover:text-cyan-100 hover:border-emerald-300/70 hover:bg-cyan-950/60 backdrop-blur-md shadow-glow-cyan-sm hover:shadow-glow-cyan transition-all active:scale-95"
+      >
+        {isBottomHudCollapsed ? <ChevronUp size={16} /> : <ChevronDown size={16} />}
+      </button>
+
+      {/* 1. Chat Sessions Drawer */}
+      <SessionDrawer
+        isOpen={isSessionDrawerOpen}
+        onClose={() => setIsSessionDrawerOpen(false)}
+        sessions={sessions}
+        activeSessionId={activeSessionId}
+        onSelectSession={onSelectSession}
+        onCreateSession={onCreateSession}
+        onRenameSession={onRenameSession}
+        onDeleteSession={onDeleteSession}
+      />
+
+      {/* 3. API Key Pool Modal */}
+      <KeyPoolModal
+        isOpen={isKeyPoolModalOpen}
+        onClose={() => setIsKeyPoolModalOpen(false)}
+      />
+
+      {/* 4. World / Global State Modal */}
+      <WorldStateModal
+        isOpen={isWorldStateModalOpen}
+        onClose={() => setIsWorldStateModalOpen(false)}
+        books={books}
+        activeBookId={activeBookId}
+        onLinkBook={onLinkBook}
+        onOpenLorebook={onNavigateToLorebook}
+      />
+
+      {/* 5. Retrieved Lore Context Drawer */}
       <LoreDrawer
         isOpen={loreDrawerOpen}
         onClose={() => setLoreDrawerOpen(false)}
         retrievedLore={activeLoreInDrawer.length > 0 ? activeLoreInDrawer : retrievedLore}
         onNavigateToLorebook={onNavigateToLorebook}
+      />
+
+      {/* 6. Language & Localization Modal */}
+      <LanguageModal
+        isOpen={isLanguageModalOpen}
+        onClose={() => setIsLanguageModalOpen(false)}
+        language={language}
+        onLanguageChange={onLanguageChange}
+      />
+
+      {/* Donut Gauge Context Window Settings Modal */}
+      <ContextSettingsModal
+        isOpen={isContextSettingsModalOpen}
+        onClose={() => setIsContextSettingsModalOpen(false)}
+        rollingThreshold={rollingThreshold}
+        onUpdateRollingThreshold={onUpdateRollingThreshold}
+        limit={contextLimit}
+        currentTokens={currentTokens}
+        isRolled={isRolled}
+        historyStats={historyStats}
       />
     </div>
   );

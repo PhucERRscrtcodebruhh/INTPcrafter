@@ -5,23 +5,23 @@ import path from 'path';
 import { fileURLToPath } from 'url';
 import { pool } from './db.js';
 import { keyPool, getPoolForUser, addUserKey, removeUserKey, getUserKeyStatus, resetUserKeys } from './geminiPool.js';
-import { 
-  dispatchStreamingGeneration, 
-  testProviderKey, 
-  getUserMultiProviderKeys, 
-  addUserMultiProviderKey, 
-  removeUserMultiProviderKey, 
+import {
+  dispatchStreamingGeneration,
+  testProviderKey,
+  getUserMultiProviderKeys,
+  addUserMultiProviderKey,
+  removeUserMultiProviderKey,
   resetUserMultiProviderStatuses,
-  detectProviderFromModel 
+  detectProviderFromModel
 } from './llmProviders.js';
-import { RAGEngine } from './ragEngine.js';
+import { RAGEngine, parseAliases } from './ragEngine.js';
 import {
   getModelContextLimit,
   estimateTokens,
   calculateContextTokens,
   applyRollingContext
 } from './tokenUtils.js';
-import { authRouter, optionalAuth, requireAuth } from './auth.js';
+import { authRouter, requireAuth } from './auth.js';
 
 dotenv.config();
 
@@ -29,6 +29,22 @@ const app = express();
 
 app.use(cors());
 app.use(express.json({ limit: '10mb' }));
+
+/**
+ * Aliases are canonicalised to CSV before they ever reach MySQL, so a JSON-array
+ * payload can never silently break alias matching inside the RAG engine.
+ */
+const normalizeAliasesCsv = (raw) => parseAliases(raw).join(', ');
+
+/**
+ * mysql2 auto-parses JSON columns on read, so a value coming back from the DB can be
+ * either an object or a string. Always hand MySQL a valid JSON *string*.
+ */
+const toJsonString = (value) => {
+  if (value === null || value === undefined || value === '') return '{}';
+  if (typeof value === 'string') return value;
+  return JSON.stringify(value);
+};
 
 // Mount Auth Router
 app.use('/api/auth', authRouter);
@@ -54,58 +70,59 @@ app.get('/api/health', async (req, res) => {
 // CHAT SESSIONS & MESSAGES (user-scoped)
 // ==========================================
 
-app.get('/api/sessions', optionalAuth, async (req, res) => {
+app.get('/api/sessions', requireAuth, async (req, res) => {
   try {
-    const userId = req.user?.id || 0;
-    let sessions;
+    const userId = req.user.id;
 
-    if (userId > 0) {
-      // Registered user: show only their sessions
-      [sessions] = await pool.query(
-        `SELECT s.id, s.title, s.user_id, s.book_id, COALESCE(s.rolling_threshold, 32768) as rolling_threshold, b.title as book_title, s.created_at, 
-                COUNT(m.id) as message_count,
-                MAX(m.created_at) as last_message_at
-         FROM chat_sessions s
-         LEFT JOIN lore_books b ON s.book_id = b.id
-         LEFT JOIN chat_messages m ON s.id = m.session_id
-         WHERE s.user_id = ?
-         GROUP BY s.id
-         ORDER BY COALESCE(MAX(m.created_at), s.created_at) DESC`,
-        [userId]
-      );
-    } else {
-      // Dev/anonymous: show sessions with NULL or 0 user_id
-      [sessions] = await pool.query(
-        `SELECT s.id, s.title, s.user_id, s.book_id, COALESCE(s.rolling_threshold, 32768) as rolling_threshold, b.title as book_title, s.created_at, 
-                COUNT(m.id) as message_count,
-                MAX(m.created_at) as last_message_at
-         FROM chat_sessions s
-         LEFT JOIN lore_books b ON s.book_id = b.id
-         LEFT JOIN chat_messages m ON s.id = m.session_id
-         WHERE s.user_id IS NULL OR s.user_id = 0
-         GROUP BY s.id
-         ORDER BY COALESCE(MAX(m.created_at), s.created_at) DESC`
-      );
-    }
+    // Strictly the caller's own chronicles. Correlated subqueries keep the read on
+    // the (session_id, id) / user indexes instead of aggregating every user's
+    // messages, and avoid a non-deterministic GROUP BY under ONLY_FULL_GROUP_BY.
+    const [sessions] = await pool.query(
+      `SELECT s.id, s.title, s.user_id, s.book_id,
+              COALESCE(s.rolling_threshold, 32768) as rolling_threshold,
+              b.title as book_title, s.created_at,
+              (SELECT COUNT(*) FROM chat_messages m
+                WHERE m.session_id = s.id AND m.user_id = s.user_id) as message_count,
+              (SELECT MAX(m.created_at) FROM chat_messages m
+                WHERE m.session_id = s.id AND m.user_id = s.user_id) as last_message_at
+       FROM chat_sessions s
+       LEFT JOIN lore_books b ON s.book_id = b.id AND b.user_id = s.user_id
+       WHERE s.user_id = ?
+       ORDER BY COALESCE(
+         (SELECT MAX(m2.created_at) FROM chat_messages m2
+           WHERE m2.session_id = s.id AND m2.user_id = s.user_id),
+         s.created_at
+       ) DESC`,
+      [userId]
+    );
+
     res.json(sessions);
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
 });
 
-app.post('/api/sessions', optionalAuth, async (req, res) => {
+app.post('/api/sessions', requireAuth, async (req, res) => {
   try {
-    const userId = req.user?.id || 0;
+    const userId = req.user.id;
     const id = `session_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
     const title = (req.body.title || 'Untitled Chronicle').trim();
     const bookId = req.body.book_id ? parseInt(req.body.book_id, 10) : null;
-    const rollingThreshold = req.body.rolling_threshold !== undefined 
-      ? parseInt(req.body.rolling_threshold, 10) 
+    const rollingThreshold = req.body.rolling_threshold !== undefined
+      ? parseInt(req.body.rolling_threshold, 10)
       : (req.body.rollingThreshold !== undefined ? parseInt(req.body.rollingThreshold, 10) : 32768);
+
+    // A session may only be linked to a book the caller owns.
+    if (bookId) {
+      const [owned] = await pool.query(`SELECT id FROM lore_books WHERE id = ? AND user_id = ? LIMIT 1`, [bookId, userId]);
+      if (owned.length === 0) {
+        return res.status(404).json({ error: 'Lore book not found for this account.' });
+      }
+    }
 
     await pool.query(
       `INSERT INTO chat_sessions (id, title, user_id, book_id, rolling_threshold) VALUES (?, ?, ?, ?, ?)`,
-      [id, title, userId > 0 ? userId : null, bookId, rollingThreshold || 32768]
+      [id, title, userId, bookId, rollingThreshold || 32768]
     );
     res.status(201).json({ id, title, user_id: userId, book_id: bookId, rolling_threshold: rollingThreshold || 32768, created_at: new Date() });
   } catch (err) {
@@ -113,10 +130,16 @@ app.post('/api/sessions', optionalAuth, async (req, res) => {
   }
 });
 
-app.put('/api/sessions/:id', optionalAuth, async (req, res) => {
+app.put('/api/sessions/:id', requireAuth, async (req, res) => {
   try {
+    const userId = req.user.id;
     const { title, book_id, rolling_threshold, rollingThreshold } = req.body;
     const sessionId = req.params.id;
+
+    const [owned] = await pool.query(`SELECT id FROM chat_sessions WHERE id = ? AND user_id = ? LIMIT 1`, [sessionId, userId]);
+    if (owned.length === 0) {
+      return res.status(404).json({ error: 'Session not found for this account.' });
+    }
 
     // Build update query dynamically
     const fields = [];
@@ -127,8 +150,15 @@ app.put('/api/sessions/:id', optionalAuth, async (req, res) => {
       values.push(title.trim());
     }
     if (book_id !== undefined) {
+      const nextBookId = book_id ? parseInt(book_id, 10) : null;
+      if (nextBookId) {
+        const [bookOwned] = await pool.query(`SELECT id FROM lore_books WHERE id = ? AND user_id = ? LIMIT 1`, [nextBookId, userId]);
+        if (bookOwned.length === 0) {
+          return res.status(404).json({ error: 'Lore book not found for this account.' });
+        }
+      }
       fields.push('book_id = ?');
-      values.push(book_id ? parseInt(book_id, 10) : null);
+      values.push(nextBookId);
     }
     const targetThreshold = rolling_threshold !== undefined ? rolling_threshold : rollingThreshold;
     if (targetThreshold !== undefined) {
@@ -140,16 +170,16 @@ app.put('/api/sessions/:id', optionalAuth, async (req, res) => {
       return res.status(400).json({ error: 'No fields to update' });
     }
 
-    values.push(sessionId);
-    await pool.query(`UPDATE chat_sessions SET ${fields.join(', ')} WHERE id = ?`, values);
-    
+    values.push(sessionId, userId);
+    await pool.query(`UPDATE chat_sessions SET ${fields.join(', ')} WHERE id = ? AND user_id = ?`, values);
+
     // Fetch updated session
     const [rows] = await pool.query(
       `SELECT s.id, s.title, s.user_id, s.book_id, COALESCE(s.rolling_threshold, 32768) as rolling_threshold, b.title as book_title, s.created_at
        FROM chat_sessions s
-       LEFT JOIN lore_books b ON s.book_id = b.id
-       WHERE s.id = ?`,
-      [sessionId]
+       LEFT JOIN lore_books b ON s.book_id = b.id AND b.user_id = s.user_id
+       WHERE s.id = ? AND s.user_id = ?`,
+      [sessionId, userId]
     );
 
     res.json({ success: true, session: rows[0] });
@@ -158,29 +188,39 @@ app.put('/api/sessions/:id', optionalAuth, async (req, res) => {
   }
 });
 
-app.delete('/api/sessions/:id', optionalAuth, async (req, res) => {
+app.delete('/api/sessions/:id', requireAuth, async (req, res) => {
   try {
+    const userId = req.user.id;
     const sessionId = req.params.id;
-    await pool.query(`DELETE FROM chat_messages WHERE session_id = ?`, [sessionId]);
-    await pool.query(`DELETE FROM chat_sessions WHERE id = ?`, [sessionId]);
+    const [result] = await pool.query(`DELETE FROM chat_sessions WHERE id = ? AND user_id = ?`, [sessionId, userId]);
+    if (result.affectedRows === 0) {
+      return res.status(404).json({ error: 'Session not found for this account.' });
+    }
     res.json({ success: true, deletedId: sessionId });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
 });
 
-app.get('/api/sessions/:id/messages', optionalAuth, async (req, res) => {
+app.get('/api/sessions/:id/messages', requireAuth, async (req, res) => {
   try {
+    const userId = req.user.id;
     const sessionId = req.params.id;
+
+    const [owned] = await pool.query(`SELECT id FROM chat_sessions WHERE id = ? AND user_id = ? LIMIT 1`, [sessionId, userId]);
+    if (owned.length === 0) {
+      return res.status(404).json({ error: 'Session not found for this account.' });
+    }
+
     const [messages] = await pool.query(
       `SELECT id, session_id, role, content, retrieved_lore_ids, created_at
        FROM chat_messages
-       WHERE session_id = ?
+       WHERE session_id = ? AND user_id = ?
        ORDER BY id ASC`,
-      [sessionId]
+      [sessionId, userId]
     );
 
-    // Fetch details of retrieved lore for each message if present
+    // Fetch details of retrieved lore for each message if present (scoped to the owner)
     const loreIdSet = new Set();
     messages.forEach(m => {
       if (m.retrieved_lore_ids) {
@@ -195,8 +235,8 @@ app.get('/api/sessions/:id/messages', optionalAuth, async (req, res) => {
     if (loreIdSet.size > 0) {
       const placeholders = Array.from(loreIdSet).map(() => '?').join(',');
       const [loreRows] = await pool.query(
-        `SELECT id, category, title, aliases, rules, content FROM lore_entries WHERE id IN (${placeholders})`,
-        Array.from(loreIdSet)
+        `SELECT id, category, title, aliases, rules, content FROM lore_entries WHERE user_id = ? AND id IN (${placeholders})`,
+        [userId, ...Array.from(loreIdSet)]
       );
       loreRows.forEach(l => { loreMap[l.id] = l; });
     }
@@ -221,16 +261,84 @@ app.get('/api/sessions/:id/messages', optionalAuth, async (req, res) => {
   }
 });
 
-// Update specific message content (edit prompt or story text)
-app.put('/api/messages/:id', optionalAuth, async (req, res) => {
+// Seed the onboarding guide + first prompt for a brand-new chronicle.
+// Idempotent: if the session already has messages, nothing is inserted.
+app.post('/api/chat/first-session-seed', requireAuth, async (req, res) => {
   try {
+    const userId = req.user.id;
+    const { sessionId, userMessage, guideMessage } = req.body || {};
+    const cleanUserMessage = String(userMessage || '').trim();
+    const cleanGuideMessage = String(guideMessage || '').trim();
+
+    if (!sessionId || !cleanUserMessage) {
+      return res.status(400).json({ error: 'sessionId and userMessage are required.' });
+    }
+
+    const [owned] = await pool.query(
+      `SELECT id FROM chat_sessions WHERE id = ? AND user_id = ? LIMIT 1`,
+      [sessionId, userId]
+    );
+    if (owned.length === 0) {
+      return res.status(404).json({ error: 'Session not found for this account.' });
+    }
+
+    const [existing] = await pool.query(
+      `SELECT id FROM chat_messages WHERE session_id = ? AND user_id = ? LIMIT 1`,
+      [sessionId, userId]
+    );
+    if (existing.length > 0) {
+      return res.json({ success: true, seeded: false });
+    }
+
+    const connection = await pool.getConnection();
+    let insertedIds = [];
+    try {
+      await connection.beginTransaction();
+
+      const [userInsert] = await connection.query(
+        `INSERT INTO chat_messages (session_id, user_id, role, content, retrieved_lore_ids)
+         VALUES (?, ?, 'user', ?, '')`,
+        [sessionId, userId, cleanUserMessage]
+      );
+      insertedIds.push(userInsert.insertId);
+
+      if (cleanGuideMessage) {
+        const [guideInsert] = await connection.query(
+          `INSERT INTO chat_messages (session_id, user_id, role, content, retrieved_lore_ids)
+           VALUES (?, ?, 'model', ?, '')`,
+          [sessionId, userId, cleanGuideMessage]
+        );
+        insertedIds.push(guideInsert.insertId);
+      }
+
+      await connection.commit();
+    } catch (seedErr) {
+      await connection.rollback().catch(() => {});
+      throw seedErr;
+    } finally {
+      connection.release();
+    }
+
+    res.status(201).json({ success: true, seeded: true, ids: insertedIds });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Update specific message content (edit prompt or story text)
+app.put('/api/messages/:id', requireAuth, async (req, res) => {
+  try {
+    const userId = req.user.id;
     const messageId = req.params.id;
     const { content } = req.body;
     if (typeof content !== 'string') {
       return res.status(400).json({ error: 'Content is required' });
     }
 
-    await pool.query(`UPDATE chat_messages SET content = ? WHERE id = ?`, [content, messageId]);
+    const [result] = await pool.query(`UPDATE chat_messages SET content = ? WHERE id = ? AND user_id = ?`, [content, messageId, userId]);
+    if (result.affectedRows === 0) {
+      return res.status(404).json({ error: 'Message not found for this account.' });
+    }
     res.json({ success: true, id: messageId, content });
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -238,10 +346,14 @@ app.put('/api/messages/:id', optionalAuth, async (req, res) => {
 });
 
 // Delete specific message
-app.delete('/api/messages/:id', optionalAuth, async (req, res) => {
+app.delete('/api/messages/:id', requireAuth, async (req, res) => {
   try {
+    const userId = req.user.id;
     const messageId = req.params.id;
-    await pool.query(`DELETE FROM chat_messages WHERE id = ?`, [messageId]);
+    const [result] = await pool.query(`DELETE FROM chat_messages WHERE id = ? AND user_id = ?`, [messageId, userId]);
+    if (result.affectedRows === 0) {
+      return res.status(404).json({ error: 'Message not found for this account.' });
+    }
     res.json({ success: true, deletedId: messageId });
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -249,10 +361,17 @@ app.delete('/api/messages/:id', optionalAuth, async (req, res) => {
 });
 
 // Truncate session messages from a specific point onward (for edit & regenerate flow)
-app.delete('/api/sessions/:sessionId/messages/from/:messageId', optionalAuth, async (req, res) => {
+app.delete('/api/sessions/:sessionId/messages/from/:messageId', requireAuth, async (req, res) => {
   try {
+    const userId = req.user.id;
     const { sessionId, messageId } = req.params;
-    await pool.query(`DELETE FROM chat_messages WHERE session_id = ? AND id >= ?`, [sessionId, messageId]);
+
+    const [owned] = await pool.query(`SELECT id FROM chat_sessions WHERE id = ? AND user_id = ? LIMIT 1`, [sessionId, userId]);
+    if (owned.length === 0) {
+      return res.status(404).json({ error: 'Session not found for this account.' });
+    }
+
+    await pool.query(`DELETE FROM chat_messages WHERE session_id = ? AND user_id = ? AND id >= ?`, [sessionId, userId, messageId]);
     res.json({ success: true, sessionId, fromMessageId: messageId });
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -277,7 +396,30 @@ Constraints & Formatting:
 - Ground all narrative assertions in the established world lore, active constraints, and prior chronicle events.
 - Never violate established resource costs, physical limitations, or world invariants.`;
 
-app.post('/api/chat', optionalAuth, async (req, res) => {
+export function buildStableRequestEnvelope({
+  historyMessages = [],
+  tier0GlobalCore = TIER_0_GLOBAL_CORE,
+  tier1WorldCore = '[WORLD CORE RULES - Default Invariants]\nMaintain logical causality, physical laws, and continuity across chronicle events.',
+  tier2UserPrompt = ''
+}) {
+  const systemInstruction = `${tier0GlobalCore}\n\n${tier1WorldCore}`;
+
+  const normalizedHistory = (Array.isArray(historyMessages) ? historyMessages : [])
+    .filter(msg => msg && typeof msg === 'object' && (msg.role === 'user' || msg.role === 'assistant' || msg.role === 'model'))
+    .map(msg => ({
+      role: msg.role === 'assistant' || msg.role === 'model' ? 'assistant' : 'user',
+      content: typeof msg.content === 'string' ? msg.content : ''
+    }));
+
+  const messages = [...normalizedHistory, { role: 'user', content: tier2UserPrompt }];
+
+  return {
+    systemInstruction,
+    messages
+  };
+}
+
+app.post('/api/chat', requireAuth, async (req, res) => {
   const {
     sessionId,
     prompt,
@@ -293,10 +435,24 @@ app.post('/api/chat', optionalAuth, async (req, res) => {
   }
 
   const cleanPrompt = prompt.trim();
-  const userId = req.user?.id || 0;
+  const userId = req.user.id;
+  let insertedUserMessageId = null;
 
   try {
-    // Load per-user key pool (BYOK)
+    // Ownership first: no key, quota or lore work for sessions that are not ours.
+    const [sessRows] = await pool.query(
+      `SELECT s.book_id, COALESCE(s.rolling_threshold, 32768) as rolling_threshold, b.title as book_title, b.system_instruction as book_instruction
+       FROM chat_sessions s
+       LEFT JOIN lore_books b ON s.book_id = b.id AND b.user_id = s.user_id
+       WHERE s.id = ? AND s.user_id = ?`,
+      [sessionId, userId]
+    );
+    const sessionBook = sessRows[0] || null;
+    if (!sessionBook) {
+      return res.status(404).json({ error: 'Session not found for this account.' });
+    }
+    const bookId = sessionBook.book_id || null;
+
     const userKeyPool = await getPoolForUser(userId);
     if (userKeyPool.keys.length === 0) {
       return res.status(400).json({
@@ -304,19 +460,9 @@ app.post('/api/chat', optionalAuth, async (req, res) => {
       });
     }
 
-    const [sessRows] = await pool.query(
-      `SELECT s.book_id, COALESCE(s.rolling_threshold, 32768) as rolling_threshold, b.title as book_title, b.system_instruction as book_instruction
-       FROM chat_sessions s
-       LEFT JOIN lore_books b ON s.book_id = b.id
-       WHERE s.id = ?`,
-      [sessionId]
-    );
-    const sessionBook = sessRows[0] || null;
-    const bookId = sessionBook?.book_id || null;
-
     const [historyRows] = await pool.query(
-      `SELECT id, role, content FROM chat_messages WHERE session_id = ? ORDER BY id ASC`,
-      [sessionId]
+      `SELECT id, role, content FROM chat_messages WHERE session_id = ? AND user_id = ? ORDER BY id ASC`,
+      [sessionId, userId]
     );
 
     const recentMessages = historyRows.slice(-3);
@@ -324,35 +470,45 @@ app.post('/api/chat', optionalAuth, async (req, res) => {
       currentPrompt: cleanPrompt,
       recentMessages,
       maxResults: 6,
-      bookId
+      bookId,
+      userId
     });
 
-    // Tier 0: Global Core - Completely Static across ALL requests
     const tier0GlobalCore = TIER_0_GLOBAL_CORE;
-
-    // Tier 1: World Core Rules - Static/Append-Only per active world
     const tier1WorldCore = sessionBook?.book_instruction?.trim()
       ? `[WORLD CORE RULES - ${sessionBook.book_title || 'Active Chronicle'}]\n${sessionBook.book_instruction.trim()}`
       : `[WORLD CORE RULES - Default Invariants]\nMaintain logical causality, physical laws, and continuity across chronicle events.`;
 
-    const fullStaticSystemInstruction = `${tier0GlobalCore}\n\n${tier1WorldCore}`;
-
     const modelLimit = getModelContextLimit(model);
-    const sessionThreshold = req.body.contextRollingThreshold !== undefined 
-      ? parseInt(req.body.contextRollingThreshold, 10) 
+    const sessionThreshold = req.body.contextRollingThreshold !== undefined
+      ? parseInt(req.body.contextRollingThreshold, 10)
       : (sessionBook?.rolling_threshold || 32768);
     const effectiveThreshold = Math.min(sessionThreshold, modelLimit - maxOutputTokens - 500);
 
+    const tier2UserPrompt = RAGEngine.formatTier2Prompt(cleanPrompt, retrievedLore);
+
+    // Anchored rolling window: the cut point only moves in one large batch, so the
+    // prompt prefix (and therefore provider-side prefix cache hits) survives between
+    // ordinary turns. The real Tier-2 payload is included in the token budget.
     const {
       prunedMessages,
       isRolled,
       originalCount,
       keptCount,
       totalTokens
-    } = applyRollingContext(historyRows, fullStaticSystemInstruction, '', effectiveThreshold);
-
-    // Tier 2: Dynamic RAG & User Input (Volatile Suffix) strictly on terminal user message
-    const tier2UserPrompt = RAGEngine.formatTier2Prompt(cleanPrompt, retrievedLore);
+    } = applyRollingContext(
+      historyRows,
+      `${tier0GlobalCore}\n\n${tier1WorldCore}`,
+      tier2UserPrompt,
+      effectiveThreshold,
+      { sessionKey: `${userId}:${sessionId}` }
+    );
+    const { systemInstruction: fullStaticSystemInstruction, messages } = buildStableRequestEnvelope({
+      historyMessages: prunedMessages,
+      tier0GlobalCore,
+      tier1WorldCore,
+      tier2UserPrompt
+    });
 
     const contents = prunedMessages.map(m => ({
       role: m.role === 'user' ? 'user' : 'model',
@@ -363,21 +519,11 @@ app.post('/api/chat', optionalAuth, async (req, res) => {
       parts: [{ text: tier2UserPrompt }]
     });
 
-    // Reconstruct outbound messages with strict 3-tier prefix caching hierarchy
-    const messages = [
-      { role: 'system', content: tier0GlobalCore },
-      { role: 'system', content: tier1WorldCore },
-      ...prunedMessages.map(m => ({
-        role: m.role === 'user' ? 'user' : 'assistant',
-        content: m.content
-      })),
-      { role: 'user', content: tier2UserPrompt }
-    ];
-
-    await pool.query(
-      `INSERT INTO chat_messages (session_id, role, content, retrieved_lore_ids) VALUES (?, 'user', ?, ?)`,
-      [sessionId, cleanPrompt, retrievedLoreIds]
+    const [userInsert] = await pool.query(
+      `INSERT INTO chat_messages (session_id, user_id, role, content, retrieved_lore_ids) VALUES (?, ?, 'user', ?, ?)`,
+      [sessionId, userId, cleanPrompt, retrievedLoreIds]
     );
+    insertedUserMessageId = userInsert.insertId;
 
     const result = await dispatchStreamingGeneration({
       userId,
@@ -395,8 +541,8 @@ app.post('/api/chat', optionalAuth, async (req, res) => {
     const replyText = result.text;
 
     await pool.query(
-      `INSERT INTO chat_messages (session_id, role, content, retrieved_lore_ids) VALUES (?, 'model', ?, ?)`,
-      [sessionId, replyText, retrievedLoreIds]
+      `INSERT INTO chat_messages (session_id, user_id, role, content, retrieved_lore_ids) VALUES (?, ?, 'model', ?, ?)`,
+      [sessionId, userId, replyText, retrievedLoreIds]
     );
 
     const promptTokens = result.usageMetadata?.promptTokenCount || (totalTokens + estimateTokens(cleanPrompt));
@@ -427,6 +573,14 @@ app.post('/api/chat', optionalAuth, async (req, res) => {
     });
   } catch (err) {
     console.error('[Chat API Error]:', err);
+    // The model never produced a reply: drop the optimistic user row so a retry
+    // does not leave a duplicate turn behind.
+    if (insertedUserMessageId) {
+      await pool.query(
+        `DELETE FROM chat_messages WHERE id = ? AND user_id = ? AND role = 'user'`,
+        [insertedUserMessageId, userId]
+      ).catch(() => {});
+    }
     res.status(500).json({
       error: err.message,
       details: err.details || null
@@ -435,7 +589,7 @@ app.post('/api/chat', optionalAuth, async (req, res) => {
 });
 
 // SSE Streaming Generation Endpoint (Multi-Provider BYOK per-user)
-app.post('/api/chat/stream', optionalAuth, async (req, res) => {
+app.post('/api/chat/stream', requireAuth, async (req, res) => {
   const {
     sessionId,
     prompt,
@@ -451,7 +605,16 @@ app.post('/api/chat/stream', optionalAuth, async (req, res) => {
   }
 
   const cleanPrompt = prompt.trim();
-  const userId = req.user?.id || 0;
+  const userId = req.user.id;
+
+  // Ownership gate before any stream headers are flushed.
+  const [ownershipRows] = await pool.query(
+    `SELECT id FROM chat_sessions WHERE id = ? AND user_id = ? LIMIT 1`,
+    [sessionId, userId]
+  );
+  if (ownershipRows.length === 0) {
+    return res.status(404).json({ error: 'Session not found for this account.' });
+  }
 
   res.setHeader('Content-Type', 'text/event-stream');
   res.setHeader('Cache-Control', 'no-cache');
@@ -459,6 +622,7 @@ app.post('/api/chat/stream', optionalAuth, async (req, res) => {
   res.flushHeaders?.();
 
   let hasStreamStarted = false;
+  let insertedUserMessageId = null;
   const keepAliveInterval = setInterval(() => {
     if (!res.writableEnded) {
       res.write(': keep-alive\n\n');
@@ -476,16 +640,19 @@ app.post('/api/chat/stream', optionalAuth, async (req, res) => {
     const [sessRows] = await pool.query(
       `SELECT s.book_id, COALESCE(s.rolling_threshold, 32768) as rolling_threshold, b.title as book_title, b.system_instruction as book_instruction
        FROM chat_sessions s
-       LEFT JOIN lore_books b ON s.book_id = b.id
-       WHERE s.id = ?`,
-      [sessionId]
+       LEFT JOIN lore_books b ON s.book_id = b.id AND b.user_id = s.user_id
+       WHERE s.id = ? AND s.user_id = ?`,
+      [sessionId, userId]
     );
     const sessionBook = sessRows[0] || null;
-    const bookId = sessionBook?.book_id || null;
+    if (!sessionBook) {
+      throw Object.assign(new Error('Session not found for this account.'), { status: 404 });
+    }
+    const bookId = sessionBook.book_id || null;
 
     const [historyRows] = await pool.query(
-      `SELECT id, role, content FROM chat_messages WHERE session_id = ? ORDER BY id ASC`,
-      [sessionId]
+      `SELECT id, role, content FROM chat_messages WHERE session_id = ? AND user_id = ? ORDER BY id ASC`,
+      [sessionId, userId]
     );
 
     const recentMessages = historyRows.slice(-3);
@@ -493,35 +660,45 @@ app.post('/api/chat/stream', optionalAuth, async (req, res) => {
       currentPrompt: cleanPrompt,
       recentMessages,
       maxResults: 6,
-      bookId
+      bookId,
+      userId
     });
 
-    // Tier 0: Global Core - Completely Static across ALL requests
     const tier0GlobalCore = TIER_0_GLOBAL_CORE;
-
-    // Tier 1: World Core Rules - Static/Append-Only per active world
     const tier1WorldCore = sessionBook?.book_instruction?.trim()
       ? `[WORLD CORE RULES - ${sessionBook.book_title || 'Active Chronicle'}]\n${sessionBook.book_instruction.trim()}`
       : `[WORLD CORE RULES - Default Invariants]\nMaintain logical causality, physical laws, and continuity across chronicle events.`;
 
-    const fullStaticSystemInstruction = `${tier0GlobalCore}\n\n${tier1WorldCore}`;
-
     const modelLimit = getModelContextLimit(model);
-    const sessionThreshold = req.body.contextRollingThreshold !== undefined 
-      ? parseInt(req.body.contextRollingThreshold, 10) 
+    const sessionThreshold = req.body.contextRollingThreshold !== undefined
+      ? parseInt(req.body.contextRollingThreshold, 10)
       : (sessionBook?.rolling_threshold || 32768);
     const effectiveThreshold = Math.min(sessionThreshold, modelLimit - maxOutputTokens - 500);
 
+    const tier2UserPrompt = RAGEngine.formatTier2Prompt(cleanPrompt, retrievedLore);
+
+    // Anchored rolling window: the cut point only moves in one large batch, so the
+    // prompt prefix (and therefore provider-side prefix cache hits) survives between
+    // ordinary turns. The real Tier-2 payload is included in the token budget.
     const {
       prunedMessages,
       isRolled,
       originalCount,
       keptCount,
       totalTokens
-    } = applyRollingContext(historyRows, fullStaticSystemInstruction, '', effectiveThreshold);
-
-    // Tier 2: Dynamic RAG & User Input (Volatile Suffix) strictly on terminal user message
-    const tier2UserPrompt = RAGEngine.formatTier2Prompt(cleanPrompt, retrievedLore);
+    } = applyRollingContext(
+      historyRows,
+      `${tier0GlobalCore}\n\n${tier1WorldCore}`,
+      tier2UserPrompt,
+      effectiveThreshold,
+      { sessionKey: `${userId}:${sessionId}` }
+    );
+    const { systemInstruction: fullStaticSystemInstruction, messages } = buildStableRequestEnvelope({
+      historyMessages: prunedMessages,
+      tier0GlobalCore,
+      tier1WorldCore,
+      tier2UserPrompt
+    });
 
     const contents = prunedMessages.map(m => ({
       role: m.role === 'user' ? 'user' : 'model',
@@ -532,21 +709,11 @@ app.post('/api/chat/stream', optionalAuth, async (req, res) => {
       parts: [{ text: tier2UserPrompt }]
     });
 
-    // Reconstruct outbound messages with strict 3-tier prefix caching hierarchy
-    const messages = [
-      { role: 'system', content: tier0GlobalCore },
-      { role: 'system', content: tier1WorldCore },
-      ...prunedMessages.map(m => ({
-        role: m.role === 'user' ? 'user' : 'assistant',
-        content: m.content
-      })),
-      { role: 'user', content: tier2UserPrompt }
-    ];
-
-    await pool.query(
-      `INSERT INTO chat_messages (session_id, role, content, retrieved_lore_ids) VALUES (?, 'user', ?, ?)`,
-      [sessionId, cleanPrompt, retrievedLoreIds]
+    const [userInsert] = await pool.query(
+      `INSERT INTO chat_messages (session_id, user_id, role, content, retrieved_lore_ids) VALUES (?, ?, 'user', ?, ?)`,
+      [sessionId, userId, cleanPrompt, retrievedLoreIds]
     );
+    insertedUserMessageId = userInsert.insertId;
 
     res.write(`event: rag\ndata: ${JSON.stringify({ retrievedLore, retrievedLoreIds })}\n\n`);
 
@@ -572,8 +739,8 @@ app.post('/api/chat/stream', optionalAuth, async (req, res) => {
     const replyText = result.text;
 
     await pool.query(
-      `INSERT INTO chat_messages (session_id, role, content, retrieved_lore_ids) VALUES (?, 'model', ?, ?)`,
-      [sessionId, replyText, retrievedLoreIds]
+      `INSERT INTO chat_messages (session_id, user_id, role, content, retrieved_lore_ids) VALUES (?, ?, 'model', ?, ?)`,
+      [sessionId, userId, replyText, retrievedLoreIds]
     );
 
     const promptTokens = result.usageMetadata?.promptTokenCount || (totalTokens + estimateTokens(cleanPrompt));
@@ -607,6 +774,14 @@ app.post('/api/chat/stream', optionalAuth, async (req, res) => {
   } catch (err) {
     cleanupKeepAlive();
     console.error('[Stream API Error]:', err);
+    // Roll back the user turn only when nothing was streamed yet; a mid-stream
+    // failure keeps the prompt so the user can inspect/regenerate the turn.
+    if (!hasStreamStarted && !err.hasStreamStarted && insertedUserMessageId) {
+      await pool.query(
+        `DELETE FROM chat_messages WHERE id = ? AND user_id = ? AND role = 'user'`,
+        [insertedUserMessageId, userId]
+      ).catch(() => {});
+    }
     const errMsg = err.message || 'Stream generation failed';
     const status = err.status || 0;
     const lower = errMsg.toLowerCase();
@@ -641,33 +816,19 @@ app.post('/api/chat/stream', optionalAuth, async (req, res) => {
 // LORE BOOKS (MULTI-WORLD CONTAINER)
 // ==========================================
 
-app.get('/api/books', optionalAuth, async (req, res) => {
+app.get('/api/books', requireAuth, async (req, res) => {
   try {
-    const userId = req.user?.id || 0;
-    let books;
-
-    if (userId > 0) {
-      [books] = await pool.query(
-        `SELECT b.id, b.user_id, b.title, b.description, b.system_instruction, b.language, b.created_at,
-                COUNT(e.id) as entry_count
-         FROM lore_books b
-         LEFT JOIN lore_entries e ON b.id = e.book_id
-         WHERE b.user_id = ? OR b.user_id IS NULL
-         GROUP BY b.id
-         ORDER BY (b.user_id = ?) DESC, b.created_at ASC`,
-        [userId, userId]
-      );
-    } else {
-      [books] = await pool.query(
-        `SELECT b.id, b.user_id, b.title, b.description, b.system_instruction, b.language, b.created_at,
-                COUNT(e.id) as entry_count
-         FROM lore_books b
-         LEFT JOIN lore_entries e ON b.id = e.book_id
-         WHERE b.user_id IS NULL OR b.user_id = 0
-         GROUP BY b.id
-         ORDER BY b.created_at ASC`
-      );
-    }
+    const userId = req.user.id;
+    const [books] = await pool.query(
+      `SELECT b.id, b.user_id, b.title, b.description, b.system_instruction, b.language, b.created_at,
+              COUNT(e.id) as entry_count
+       FROM lore_books b
+       LEFT JOIN lore_entries e ON b.id = e.book_id AND e.user_id = b.user_id
+       WHERE b.user_id = ?
+       GROUP BY b.id
+       ORDER BY b.created_at ASC`,
+      [userId]
+    );
 
     res.json(books);
   } catch (err) {
@@ -675,9 +836,9 @@ app.get('/api/books', optionalAuth, async (req, res) => {
   }
 });
 
-app.post('/api/books', optionalAuth, async (req, res) => {
+app.post('/api/books', requireAuth, async (req, res) => {
   try {
-    const userId = req.user?.id || 0;
+    const userId = req.user.id;
     const { title, description = '', system_instruction = '', language = 'vi' } = req.body;
 
     if (!title?.trim()) {
@@ -687,12 +848,12 @@ app.post('/api/books', optionalAuth, async (req, res) => {
     const [result] = await pool.query(
       `INSERT INTO lore_books (user_id, title, description, system_instruction, language)
        VALUES (?, ?, ?, ?, ?)`,
-      [userId > 0 ? userId : null, title.trim(), description.trim(), system_instruction.trim(), language.trim()]
+      [userId, title.trim(), description.trim(), system_instruction.trim(), language.trim()]
     );
 
     res.status(201).json({
       id: result.insertId,
-      user_id: userId > 0 ? userId : null,
+      user_id: userId,
       title: title.trim(),
       description: description.trim(),
       system_instruction: system_instruction.trim(),
@@ -705,14 +866,15 @@ app.post('/api/books', optionalAuth, async (req, res) => {
   }
 });
 
-app.put('/api/books/:id', optionalAuth, async (req, res) => {
+app.put('/api/books/:id', requireAuth, async (req, res) => {
   try {
+    const userId = req.user.id;
     const bookId = parseInt(req.params.id, 10);
     const { title, description, system_instruction, language } = req.body;
 
-    const [existing] = await pool.query(`SELECT * FROM lore_books WHERE id = ?`, [bookId]);
+    const [existing] = await pool.query(`SELECT * FROM lore_books WHERE id = ? AND user_id = ? LIMIT 1`, [bookId, userId]);
     if (existing.length === 0) {
-      return res.status(404).json({ error: 'Lore Book not found' });
+      return res.status(404).json({ error: 'Lore Book not found for this account.' });
     }
 
     const updatedTitle = title !== undefined ? title.trim() : existing[0].title;
@@ -721,9 +883,12 @@ app.put('/api/books/:id', optionalAuth, async (req, res) => {
     const updatedLang = language !== undefined ? language.trim() : existing[0].language;
 
     await pool.query(
-      `UPDATE lore_books SET title = ?, description = ?, system_instruction = ?, language = ? WHERE id = ?`,
-      [updatedTitle, updatedDesc, updatedInst, updatedLang, bookId]
+      `UPDATE lore_books SET title = ?, description = ?, system_instruction = ?, language = ? WHERE id = ? AND user_id = ?`,
+      [updatedTitle, updatedDesc, updatedInst, updatedLang, bookId, userId]
     );
+
+    // Tier 1 (World Core) changed -> the cached RAG scope must be rebuilt.
+    RAGEngine.invalidate({ userId, bookId });
 
     res.json({
       success: true,
@@ -738,23 +903,39 @@ app.put('/api/books/:id', optionalAuth, async (req, res) => {
   }
 });
 
-app.delete('/api/books/:id', optionalAuth, async (req, res) => {
+app.delete('/api/books/:id', requireAuth, async (req, res) => {
   try {
+    const userId = req.user.id;
     const bookId = parseInt(req.params.id, 10);
-    await pool.query(`DELETE FROM lore_entries WHERE book_id = ?`, [bookId]);
-    await pool.query(`DELETE FROM lore_books WHERE id = ?`, [bookId]);
+
+    const [result] = await pool.query(`DELETE FROM lore_books WHERE id = ? AND user_id = ?`, [bookId, userId]);
+    if (result.affectedRows === 0) {
+      return res.status(404).json({ error: 'Lore Book not found for this account.' });
+    }
+
+    // FK cascade removed the entries; drop the RAG scope so nothing stays cached.
+    RAGEngine.invalidate({ userId, bookId });
+
     res.json({ success: true, deletedId: bookId });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
 });
 
-app.get('/api/books/:id/entries', async (req, res) => {
+app.get('/api/books/:id/entries', requireAuth, async (req, res) => {
   try {
+    const userId = req.user.id;
     const bookId = parseInt(req.params.id, 10);
     const { category, search } = req.query;
-    let sql = `SELECT id, book_id, world_id, category, title, aliases, rules, content, metadata, created_at, updated_at FROM lore_entries WHERE (book_id = ? OR world_id = ?)`;
-    const params = [bookId, String(bookId)];
+
+    const [owned] = await pool.query(`SELECT id FROM lore_books WHERE id = ? AND user_id = ? LIMIT 1`, [bookId, userId]);
+    if (owned.length === 0) {
+      return res.status(404).json({ error: 'Lore Book not found for this account.' });
+    }
+
+    let sql = `SELECT id, user_id, book_id, world_id, category, title, aliases, rules, content, metadata, created_at, updated_at
+               FROM lore_entries WHERE user_id = ? AND book_id = ?`;
+    const params = [userId, bookId];
 
     if (category && category !== 'All') {
       sql += ` AND category = ?`;
@@ -783,16 +964,22 @@ app.get('/api/books/:id/entries', async (req, res) => {
 // LOREBOOK DATABASE CRUD (public / book-scoped)
 // ==========================================
 
-app.get('/api/lore', async (req, res) => {
+app.get('/api/lore', requireAuth, async (req, res) => {
   try {
+    const userId = req.user.id;
     const { category, search, book_id, worldId } = req.query;
-    let sql = `SELECT id, book_id, world_id, category, title, aliases, rules, content, metadata, created_at, updated_at FROM lore_entries WHERE 1=1`;
-    const params = [];
+    let sql = `SELECT id, user_id, book_id, world_id, category, title, aliases, rules, content, metadata, created_at, updated_at
+               FROM lore_entries WHERE user_id = ?`;
+    const params = [userId];
 
-    const targetWorld = worldId || book_id;
-    if (targetWorld) {
-      sql += ` AND (book_id = ? OR world_id = ?)`;
-      params.push(parseInt(targetWorld, 10) || targetWorld, String(targetWorld));
+    const targetBook = book_id || worldId;
+    if (targetBook !== undefined && targetBook !== null && String(targetBook).trim() !== '') {
+      const targetBookId = parseInt(targetBook, 10);
+      if (!Number.isFinite(targetBookId) || targetBookId <= 0) {
+        return res.status(400).json({ error: 'book_id must be a positive integer.' });
+      }
+      sql += ` AND book_id = ?`;
+      params.push(targetBookId);
     }
     if (category && category !== 'All') {
       sql += ` AND category = ?`;
@@ -808,6 +995,7 @@ app.get('/api/lore', async (req, res) => {
     const [rows] = await pool.query(sql, params);
     const processed = rows.map(r => ({
       ...r,
+      aliases: normalizeAliasesCsv(r.aliases),
       canonicalLore: r.content || '',
       metadata: typeof r.metadata === 'string' ? JSON.parse(r.metadata || '{}') : (r.metadata || {})
     }));
@@ -817,16 +1005,17 @@ app.get('/api/lore', async (req, res) => {
   }
 });
 
-app.post('/api/lore', async (req, res) => {
+app.post('/api/lore', requireAuth, async (req, res) => {
   try {
-    const { 
-      category = 'General', 
-      title, 
-      aliases = '', 
-      rules = '', 
-      content = '', 
-      canonicalLore = '', 
-      metadata = {}, 
+    const userId = req.user.id;
+    const {
+      category = 'General',
+      title,
+      aliases = '',
+      rules = '',
+      content = '',
+      canonicalLore = '',
+      metadata = {},
       book_id,
       worldId
     } = req.body;
@@ -835,26 +1024,35 @@ app.post('/api/lore', async (req, res) => {
       return res.status(400).json({ error: 'Title is required' });
     }
 
-    const targetWorldId = worldId || (book_id ? String(book_id) : null);
-    let targetBookId = book_id ? parseInt(book_id, 10) : (targetWorldId ? parseInt(targetWorldId, 10) : null);
-    if (!targetBookId && !targetWorldId) {
-      const [firstBook] = await pool.query(`SELECT id FROM lore_books ORDER BY id ASC LIMIT 1`);
-      targetBookId = firstBook[0]?.id || null;
+    // Every entry must belong to one of the caller's own books (no global fallback).
+    const targetBookId = parseInt(book_id ?? worldId, 10);
+    if (!targetBookId) {
+      return res.status(400).json({ error: 'book_id is required to create a lore entry.' });
+    }
+
+    const [owned] = await pool.query(`SELECT id FROM lore_books WHERE id = ? AND user_id = ? LIMIT 1`, [targetBookId, userId]);
+    if (owned.length === 0) {
+      return res.status(404).json({ error: 'Lore Book not found for this account.' });
     }
 
     const finalContent = (canonicalLore || content || '').trim();
     const metadataStr = typeof metadata === 'object' ? JSON.stringify(metadata) : (metadata || '{}');
-    const aliasesStr = Array.isArray(aliases) ? JSON.stringify(aliases) : String(aliases).trim();
+    const aliasesStr = normalizeAliasesCsv(aliases);
 
     const [result] = await pool.query(
-      `INSERT INTO lore_entries (book_id, world_id, category, title, aliases, rules, content, metadata) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-      [targetBookId, targetWorldId || (targetBookId ? String(targetBookId) : null), category.trim(), title.trim(), aliasesStr, rules.trim(), finalContent, metadataStr]
+      `INSERT INTO lore_entries (user_id, book_id, world_id, category, title, aliases, rules, content, metadata)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [userId, targetBookId, String(targetBookId), category.trim(), title.trim(), aliasesStr, rules.trim(), finalContent, metadataStr]
     );
+
+    // New canon available: rebuild the RAG scope so it is retrievable immediately.
+    RAGEngine.invalidate({ userId, bookId: targetBookId });
 
     res.status(201).json({
       id: result.insertId,
+      user_id: userId,
       book_id: targetBookId,
-      world_id: targetWorldId || (targetBookId ? String(targetBookId) : null),
+      world_id: String(targetBookId),
       category,
       title: title.trim(),
       aliases: aliasesStr,
@@ -868,17 +1066,18 @@ app.post('/api/lore', async (req, res) => {
   }
 });
 
-app.put('/api/lore/:id', async (req, res) => {
+app.put('/api/lore/:id', requireAuth, async (req, res) => {
   try {
-    const id = req.params.id;
-    const { 
-      category, 
-      title, 
-      aliases, 
-      rules, 
-      content, 
-      canonicalLore, 
-      metadata, 
+    const userId = req.user.id;
+    const id = parseInt(req.params.id, 10);
+    const {
+      category,
+      title,
+      aliases,
+      rules,
+      content,
+      canonicalLore,
+      metadata,
       book_id,
       worldId
     } = req.body;
@@ -888,39 +1087,59 @@ app.put('/api/lore/:id', async (req, res) => {
     }
 
     const finalContent = canonicalLore !== undefined ? canonicalLore : content;
-    const metadataStr = metadata !== undefined 
+    const metadataStr = metadata !== undefined
       ? (typeof metadata === 'object' ? JSON.stringify(metadata) : String(metadata))
       : null;
-    const aliasesStr = aliases !== undefined
-      ? (Array.isArray(aliases) ? JSON.stringify(aliases) : String(aliases).trim())
-      : null;
+    const aliasesStr = aliases !== undefined ? normalizeAliasesCsv(aliases) : null;
 
-    const targetWorldId = worldId || (book_id ? String(book_id) : null);
-    const targetBookId = book_id ? parseInt(book_id, 10) : (targetWorldId ? parseInt(targetWorldId, 10) : null);
-
-    const [existing] = await pool.query(`SELECT * FROM lore_entries WHERE id = ?`, [id]);
+    // Ownership check first: entry must already belong to the caller.
+    const [existing] = await pool.query(`SELECT * FROM lore_entries WHERE id = ? AND user_id = ? LIMIT 1`, [id, userId]);
     if (existing.length === 0) {
-      return res.status(404).json({ error: 'Lore entry not found' });
+      return res.status(404).json({ error: 'Lore entry not found for this account.' });
+    }
+
+    // `world_id` is a nullable free-form scope (graph world), NOT a synonym for the
+    // owning book. Only rewrite it when the caller explicitly supplies a new scope;
+    // otherwise editing an entry used to silently destroy its world binding.
+    const hasBookTarget = book_id !== undefined || worldId !== undefined;
+    const requestedBookId = book_id !== undefined ? book_id : worldId;
+    const nextBookId = requestedBookId !== undefined && requestedBookId !== null && String(requestedBookId).trim() !== ''
+      ? parseInt(requestedBookId, 10)
+      : null;
+    if (nextBookId) {
+      const [bookOwned] = await pool.query(`SELECT id FROM lore_books WHERE id = ? AND user_id = ? LIMIT 1`, [nextBookId, userId]);
+      if (bookOwned.length === 0) {
+        return res.status(404).json({ error: 'Target Lore Book not found for this account.' });
+      }
     }
 
     const updatedCategory = category !== undefined ? category.trim() : existing[0].category;
     const updatedTitle = title !== undefined ? title.trim() : existing[0].title;
-    const updatedAliases = aliasesStr !== null ? aliasesStr : existing[0].aliases;
+    const updatedAliases = aliasesStr !== null ? aliasesStr : normalizeAliasesCsv(existing[0].aliases);
     const updatedRules = rules !== undefined ? rules.trim() : existing[0].rules;
     const updatedContent = finalContent !== undefined ? finalContent.trim() : existing[0].content;
-    const updatedMetadata = metadataStr !== null ? metadataStr : (existing[0].metadata || '{}');
-    const updatedBookId = targetBookId !== null ? targetBookId : existing[0].book_id;
-    const updatedWorldId = targetWorldId !== null ? targetWorldId : existing[0].world_id;
+    const updatedMetadata = metadataStr !== null ? metadataStr : toJsonString(existing[0].metadata);
+    const updatedBookId = hasBookTarget && nextBookId ? nextBookId : existing[0].book_id;
+    const updatedWorldId = worldId !== undefined && worldId !== null && String(worldId).trim() !== ''
+      ? String(worldId)
+      : (hasBookTarget ? String(updatedBookId) : (existing[0].world_id || String(updatedBookId)));
 
     await pool.query(
-      `UPDATE lore_entries 
-       SET category = ?, title = ?, aliases = ?, rules = ?, content = ?, metadata = ?, book_id = ?, world_id = ? 
-       WHERE id = ?`,
-      [updatedCategory, updatedTitle, updatedAliases, updatedRules, updatedContent, updatedMetadata, updatedBookId, updatedWorldId, id]
+      `UPDATE lore_entries
+       SET category = ?, title = ?, aliases = ?, rules = ?, content = ?, metadata = ?, book_id = ?, world_id = ?
+       WHERE id = ? AND user_id = ?`,
+      [updatedCategory, updatedTitle, updatedAliases, updatedRules, updatedContent, updatedMetadata, updatedBookId, updatedWorldId, id, userId]
     );
 
+    // Canon changed: drop the stale RAG scope (both the old and the new book).
+    RAGEngine.invalidate({ userId, bookId: existing[0].book_id });
+    if (updatedBookId !== existing[0].book_id) {
+      RAGEngine.invalidate({ userId, bookId: updatedBookId });
+    }
+
     res.json({
-      id: parseInt(id, 10),
+      id,
+      user_id: userId,
       book_id: updatedBookId,
       world_id: updatedWorldId,
       category: updatedCategory,
@@ -936,10 +1155,21 @@ app.put('/api/lore/:id', async (req, res) => {
   }
 });
 
-app.delete('/api/lore/:id', async (req, res) => {
+app.delete('/api/lore/:id', requireAuth, async (req, res) => {
   try {
-    const id = req.params.id;
-    await pool.query(`DELETE FROM lore_entries WHERE id = ?`, [id]);
+    const userId = req.user.id;
+    const id = parseInt(req.params.id, 10);
+
+    const [rows] = await pool.query(`SELECT id, book_id FROM lore_entries WHERE id = ? AND user_id = ? LIMIT 1`, [id, userId]);
+    if (rows.length === 0) {
+      return res.status(404).json({ error: 'Lore entry not found for this account.' });
+    }
+
+    await pool.query(`DELETE FROM lore_entries WHERE id = ? AND user_id = ?`, [id, userId]);
+
+    // Deleted canon must disappear from RAG immediately (no 5-minute ghost lore).
+    RAGEngine.invalidate({ userId, bookId: rows[0].book_id });
+
     res.json({ success: true, deletedId: id });
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -950,12 +1180,13 @@ app.delete('/api/lore/:id', async (req, res) => {
 // GRAPH STATE & CANVAS CONNECTIONS API
 // ==========================================
 
-app.get('/api/graph/:worldId', async (req, res) => {
+app.get('/api/graph/:worldId', requireAuth, async (req, res) => {
   try {
+    const userId = req.user.id;
     const worldId = String(req.params.worldId);
     const [rows] = await pool.query(
-      `SELECT id, world_id, nodes, edges, updated_at FROM graph_states WHERE world_id = ? LIMIT 1`,
-      [worldId]
+      `SELECT id, world_id, nodes, edges, updated_at FROM graph_states WHERE user_id = ? AND world_id = ? LIMIT 1`,
+      [userId, worldId]
     );
 
     if (rows.length === 0) {
@@ -983,47 +1214,75 @@ app.get('/api/graph/:worldId', async (req, res) => {
   }
 });
 
-app.post('/api/graph/:worldId', async (req, res) => {
+app.post('/api/graph/:worldId', requireAuth, async (req, res) => {
   try {
+    const userId = req.user.id;
     const worldId = String(req.params.worldId);
-    const { nodes = [], edges = [] } = req.body;
+    const { nodes, edges } = req.body || {};
+    const safeNodes = Array.isArray(nodes) ? nodes : [];
+    const safeEdges = Array.isArray(edges) ? edges : [];
 
-    const nodesJson = JSON.stringify(nodes);
-    const edgesJson = JSON.stringify(edges);
-    const graphId = `graph_${worldId}`;
+    const nodesJson = JSON.stringify(safeNodes);
+    const edgesJson = JSON.stringify(safeEdges);
+    const graphId = `graph_${userId}_${worldId}`;
 
     await pool.query(
-      `INSERT INTO graph_states (id, world_id, nodes, edges) 
-       VALUES (?, ?, ?, ?)
+      `INSERT INTO graph_states (id, user_id, world_id, nodes, edges)
+       VALUES (?, ?, ?, ?, ?)
        ON DUPLICATE KEY UPDATE nodes = ?, edges = ?, updated_at = CURRENT_TIMESTAMP`,
-      [graphId, worldId, nodesJson, edgesJson, nodesJson, edgesJson]
+      [graphId, userId, worldId, nodesJson, edgesJson, nodesJson, edgesJson]
     );
 
-    // Sync individual wiring into node_connections table
+    // Sync individual wiring into node_connections atomically. A partially applied
+    // edge list would silently corrupt graph traversal for the next reads.
+    const connection = await pool.getConnection();
+    const seenEdgeIds = new Set();
     try {
-      await pool.query(`DELETE FROM node_connections WHERE world_id = ?`, [worldId]);
-      if (Array.isArray(edges) && edges.length > 0) {
-        for (const e of edges) {
-          const edgeId = e.id || `e_${e.source}_${e.target}_${Date.now()}`;
-          const edgeType = e.type || e.data?.relationshipType || 'relationship';
-          const label = e.label || e.data?.label || '';
-          const dataJson = JSON.stringify(e.data || {});
-          await pool.query(
-            `INSERT INTO node_connections (id, world_id, source_node_id, target_node_id, edge_type, label, data)
-             VALUES (?, ?, ?, ?, ?, ?, ?)`,
-            [edgeId, worldId, e.source, e.target, edgeType, label, dataJson]
-          );
+      await connection.beginTransaction();
+      await connection.query(
+        `DELETE FROM node_connections WHERE user_id = ? AND world_id = ?`,
+        [userId, worldId]
+      );
+
+      for (let i = 0; i < safeEdges.length; i += 1) {
+        const e = safeEdges[i] || {};
+        if (!e.source || !e.target) continue;
+
+        // node_connections.id is VARCHAR(64): truncate deterministic ids and make
+        // sure duplicates inside a single payload cannot abort the transaction.
+        const baseId = e.id ? `${userId}_${e.id}` : `e_${userId}_${i}`;
+        let edgeId = String(baseId).slice(0, 64);
+        let suffix = 1;
+        while (seenEdgeIds.has(edgeId)) {
+          const tail = `_${suffix}`;
+          edgeId = `${String(baseId).slice(0, 64 - tail.length)}${tail}`;
+          suffix += 1;
         }
+        seenEdgeIds.add(edgeId);
+
+        const edgeType = String(e.type || e.data?.relationshipType || 'relationship').slice(0, 50);
+        const label = String(e.label || e.data?.label || '').slice(0, 255);
+
+        await connection.query(
+          `INSERT INTO node_connections (id, user_id, world_id, source_node_id, target_node_id, edge_type, label, data)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+          [edgeId, userId, worldId, String(e.source), String(e.target), edgeType, label, JSON.stringify(e.data || {})]
+        );
       }
+
+      await connection.commit();
     } catch (connErr) {
+      await connection.rollback().catch(() => {});
       console.warn('[Graph DB Sync Warning]:', connErr.message);
+    } finally {
+      connection.release();
     }
 
     res.json({
       success: true,
       worldId,
-      nodesCount: nodes.length,
-      edgesCount: edges.length,
+      nodesCount: safeNodes.length,
+      edgesCount: safeEdges.length,
       updatedAt: new Date()
     });
   } catch (err) {
@@ -1036,9 +1295,9 @@ app.post('/api/graph/:worldId', async (req, res) => {
 // ==========================================
 
 // Get user's keys (filtered optionally by ?provider=gemini|deepseek|openrouter|huggingface)
-app.get('/api/keys', optionalAuth, async (req, res) => {
+app.get('/api/keys', requireAuth, async (req, res) => {
   try {
-    const userId = req.user?.id || 0;
+    const userId = req.user.id;
     const provider = req.query.provider || null;
     const status = await getUserMultiProviderKeys(userId, provider);
     res.json(status);
@@ -1048,9 +1307,9 @@ app.get('/api/keys', optionalAuth, async (req, res) => {
 });
 
 // Add a key for user (Multi-Provider BYOK)
-app.post('/api/keys', optionalAuth, async (req, res) => {
+app.post('/api/keys', requireAuth, async (req, res) => {
   try {
-    const userId = req.user?.id || 0;
+    const userId = req.user.id;
     const { key, keys, provider = 'gemini', baseUrl } = req.body;
 
     // Support batch of keys
@@ -1079,9 +1338,9 @@ app.post('/api/keys', optionalAuth, async (req, res) => {
 });
 
 // Remove a specific key for user
-app.delete('/api/keys/:keyId', optionalAuth, async (req, res) => {
+app.delete('/api/keys/:keyId', requireAuth, async (req, res) => {
   try {
-    const userId = req.user?.id || 0;
+    const userId = req.user.id;
     const updatedStatus = await removeUserMultiProviderKey(userId, parseInt(req.params.keyId, 10));
     res.json({ success: true, keys: updatedStatus });
   } catch (err) {
@@ -1102,9 +1361,9 @@ app.post('/api/keys/test', async (req, res) => {
 });
 
 // Reset user's key statuses (optionally per provider)
-app.post('/api/keys/reset', optionalAuth, async (req, res) => {
+app.post('/api/keys/reset', requireAuth, async (req, res) => {
   try {
-    const userId = req.user?.id || 0;
+    const userId = req.user.id;
     const provider = req.body.provider || req.query.provider || null;
     const updatedStatus = await resetUserMultiProviderStatuses(userId, provider);
     res.json({ success: true, keys: updatedStatus });
@@ -1113,8 +1372,8 @@ app.post('/api/keys/reset', optionalAuth, async (req, res) => {
   }
 });
 
-// Master System Instruction (public)
-app.get('/api/config/instruction', async (req, res) => {
+// Master System Instruction
+app.get('/api/config/instruction', requireAuth, async (req, res) => {
   try {
     const [rows] = await pool.query(`SELECT value FROM system_configs WHERE key_name = 'master_system_instruction'`);
     res.json({ instruction: rows[0]?.value || '' });
@@ -1123,7 +1382,7 @@ app.get('/api/config/instruction', async (req, res) => {
   }
 });
 
-app.post('/api/config/instruction', async (req, res) => {
+app.post('/api/config/instruction', requireAuth, async (req, res) => {
   try {
     const { instruction } = req.body;
     if (typeof instruction !== 'string') {
@@ -1135,6 +1394,39 @@ app.post('/api/config/instruction', async (req, res) => {
       [instruction, instruction]
     );
     res.json({ success: true, instruction });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ==========================================
+// RAG CACHE TELEMETRY & MANUAL INVALIDATION
+// ==========================================
+
+// GET /api/rag/stats — cache hit-rate telemetry (target: payload hit + DB-free turns >= 80%)
+app.get('/api/rag/stats', requireAuth, (req, res) => {
+  const stats = RAGEngine.getStats();
+  res.json({
+    ...stats,
+    target: { payloadHitRate: 0.8, dbFreeTurnRate: 0.8 },
+    meetsTarget: stats.payloadHitRate >= 0.8 && stats.dbFreeTurnRate >= 0.8
+  });
+});
+
+// POST /api/rag/invalidate — flush one owned scope, or the whole cache
+app.post('/api/rag/invalidate', requireAuth, async (req, res) => {
+  try {
+    const bookId = req.body?.bookId ? parseInt(req.body.bookId, 10) : null;
+
+    if (bookId) {
+      const [owned] = await pool.query(`SELECT id FROM lore_books WHERE id = ? AND user_id = ? LIMIT 1`, [bookId, req.user.id]);
+      if (owned.length === 0) {
+        return res.status(404).json({ error: 'Lore Book not found for this account.' });
+      }
+      return res.json({ success: true, ...RAGEngine.invalidate({ userId: req.user.id, bookId }) });
+    }
+
+    return res.json({ success: true, ...RAGEngine.invalidate() });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }

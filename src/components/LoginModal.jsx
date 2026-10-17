@@ -1,12 +1,13 @@
 import React, { useState } from 'react';
-import { Terminal, ShieldCheck, Lock, User, Eye, EyeOff, X, KeyRound, UserPlus } from 'lucide-react';
+import { Terminal, ShieldCheck, Lock, User, Mail, Eye, EyeOff, X, KeyRound, UserPlus } from 'lucide-react';
 import { api } from '../services/api';
 import { useTranslation } from '../i18n';
 
 export default function LoginModal({ isOpen, onClose, onLoginSuccess }) {
   const { t } = useTranslation('vi');
   const [tab, setTab] = useState('login');
-  const [username, setUsername] = useState('');
+  const [email, setEmail] = useState('');
+  const [displayName, setDisplayName] = useState('');
   const [password, setPassword] = useState('');
   const [confirmPassword, setConfirmPassword] = useState('');
   const [showPassword, setShowPassword] = useState(false);
@@ -26,16 +27,22 @@ export default function LoginModal({ isOpen, onClose, onLoginSuccess }) {
       return;
     }
 
+    // Client-side guard: registration is Gmail-only.
+    if (tab === 'register' && !/^[a-z0-9._%+-]+@(gmail|googlemail)\.com$/i.test(email.trim())) {
+      setError(t('auth.gmailOnly'));
+      return;
+    }
+
     setLoading(true);
     try {
       if (tab === 'login') {
-        const res = await api.login(username, password);
+        const res = await api.login(email, password);
         localStorage.setItem('storycontainer_user', JSON.stringify(res.user));
         localStorage.setItem('storycontainer_token', res.token);
         if (onLoginSuccess) onLoginSuccess(res.user);
         onClose();
       } else {
-        const res = await api.register(username, password);
+        const res = await api.register(email, password, displayName);
         localStorage.setItem('storycontainer_user', JSON.stringify(res.user));
         localStorage.setItem('storycontainer_token', res.token);
         setSuccessMsg(t('auth.registerSuccess'));
@@ -52,12 +59,12 @@ export default function LoginModal({ isOpen, onClose, onLoginSuccess }) {
   };
 
   const quickDevLogin = async () => {
-    setUsername('0');
+    setEmail('dev@gmail.com');
     setPassword('0000');
     setError(null);
     setLoading(true);
     try {
-      const res = await api.login('0', '0000');
+      const res = await api.login('dev@gmail.com', '0000');
       localStorage.setItem('storycontainer_user', JSON.stringify(res.user));
       localStorage.setItem('storycontainer_token', res.token);
       if (onLoginSuccess) onLoginSuccess(res.user);
@@ -122,19 +129,40 @@ export default function LoginModal({ isOpen, onClose, onLoginSuccess }) {
 
           <form onSubmit={handleSubmit} className="space-y-4">
             <div className="space-y-1">
-              <label className="text-xs text-cyan-400 uppercase tracking-wider">{t('auth.username')}</label>
+              <label className="text-xs text-cyan-400 uppercase tracking-wider">{t('auth.gmail')}</label>
               <div className="relative">
-                <User className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-500" />
+                <Mail className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-500" />
                 <input
-                  type="text"
+                  type="email"
                   required
-                  value={username}
-                  onChange={(e) => setUsername(e.target.value)}
+                  autoComplete="email"
+                  value={email}
+                  onChange={(e) => setEmail(e.target.value)}
                   className="w-full bg-cyber-900 border border-cyan-500/30 rounded py-2 pl-10 pr-3 text-slate-200 focus:outline-none focus:border-cyan-400 focus:shadow-glow-cyan-sm transition-all"
-                  placeholder="ID / Username"
+                  placeholder={t('auth.gmailPlaceholder')}
                 />
               </div>
+              {tab === 'register' && (
+                <p className="text-[11px] text-slate-500 pl-1">{t('auth.gmailOnly')}</p>
+              )}
             </div>
+
+            {tab === 'register' && (
+              <div className="space-y-1">
+                <label className="text-xs text-cyan-400 uppercase tracking-wider">{t('auth.displayName')}</label>
+                <div className="relative">
+                  <User className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-500" />
+                  <input
+                    type="text"
+                    value={displayName}
+                    onChange={(e) => setDisplayName(e.target.value)}
+                    maxLength={100}
+                    className="w-full bg-cyber-900 border border-cyan-500/30 rounded py-2 pl-10 pr-3 text-slate-200 focus:outline-none focus:border-cyan-400 focus:shadow-glow-cyan-sm transition-all"
+                    placeholder="INTP Writer"
+                  />
+                </div>
+              </div>
+            )}
 
             <div className="space-y-1">
               <label className="text-xs text-cyan-400 uppercase tracking-wider">{t('auth.password')}</label>

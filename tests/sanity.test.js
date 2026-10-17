@@ -39,11 +39,20 @@ async function runTests() {
   }
   console.log('✓ Token & Rolling Context Window passed.\n');
 
-  // Test 2: RAG Engine MySQL Entity & Keyword Retrieval
-  console.log('[TEST 2] Testing MySQL RAG Engine...');
+  // Test 2: RAG Engine MySQL Entity & Keyword Retrieval (strictly user+book scoped)
+  console.log('[TEST 2] Testing MySQL RAG Engine (user-scoped)...');
+  const [devRows] = await pool.query(`SELECT id FROM users WHERE email = 'dev@gmail.com'`);
+  if (devRows.length === 0) throw new Error('Dev account missing - run initDatabase() first');
+  const devUserId = devRows[0].id;
+  const [devBooks] = await pool.query(`SELECT id FROM lore_books WHERE user_id = ? ORDER BY id ASC LIMIT 1`, [devUserId]);
+  if (devBooks.length === 0) throw new Error('Dev starter world missing');
+  const devBookId = devBooks[0].id;
+
   const ragResult = await RAGEngine.retrieveLore({
     currentPrompt: "Kaelen prepares to channel Aether despite the risk of Flux Burn.",
-    recentMessages: []
+    recentMessages: [],
+    bookId: devBookId,
+    userId: devUserId
   });
   console.log(`- Retrieved ${ragResult.retrievedLore.length} lore entries.`);
   ragResult.retrievedLore.forEach(l => {
@@ -52,6 +61,13 @@ async function runTests() {
   if (ragResult.retrievedLore.length === 0) {
     throw new Error('RAG engine failed to match seeded lore');
   }
+
+  // Scope is mandatory: no user/book => nothing is ever returned
+  const scopedOut = await RAGEngine.retrieveLore({ currentPrompt: 'Kaelen prepares to channel Aether.', recentMessages: [] });
+  if (scopedOut.retrievedLore.length !== 0 || scopedOut.reason !== 'missing_scope') {
+    throw new Error('RAGEngine must refuse to retrieve without an explicit user + book scope');
+  }
+  console.log('- Unscoped call correctly refused (reason=missing_scope).');
   console.log('✓ RAG Engine entity matching passed.\n');
 
   // Test 3: Key Pool Telemetry & Status

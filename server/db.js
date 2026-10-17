@@ -1,5 +1,6 @@
 import mysql from 'mysql2/promise';
 import dotenv from 'dotenv';
+import bcrypt from 'bcryptjs';
 
 dotenv.config();
 
@@ -7,21 +8,61 @@ if (!process.env.DB_HOST || !process.env.DB_USER || !process.env.DB_PASSWORD) {
   console.warn('[DB Security Warning] Missing database credentials in environment variables (.env). Please configure DB_HOST, DB_USER, DB_PASSWORD, DB_NAME.');
 }
 
+const toInt = (value, fallback) => {
+  const parsed = parseInt(value, 10);
+  return Number.isFinite(parsed) ? parsed : fallback;
+};
+
+const IS_SERVERLESS = Boolean(process.env.VERCEL || process.env.AWS_LAMBDA_FUNCTION_NAME || process.env.NETLIFY);
+
+const DB_CONNECT_TIMEOUT = toInt(process.env.DB_CONNECT_TIMEOUT_MS, IS_SERVERLESS ? 8000 : 15000);
+// Serverless cold starts have a hard function timeout; a single bounded attempt is
+// safer than a multi-attempt backoff. Set DB_CONNECT_RETRIES explicitly to override.
+const DB_CONNECT_RETRIES = Math.max(1, toInt(process.env.DB_CONNECT_RETRIES, IS_SERVERLESS ? 1 : 3));
+const DB_SSL_MODE = String(process.env.DB_SSL || '').toLowerCase();
+const DB_SSL_ENABLED = DB_SSL_MODE === 'true' || DB_SSL_MODE === 'required' || DB_SSL_MODE === '1';
+
 export const dbConfig = {
   host: process.env.DB_HOST,
-  port: parseInt(process.env.DB_PORT || '3306', 10),
+  port: toInt(process.env.DB_PORT, 3306),
   user: process.env.DB_USER,
   password: process.env.DB_PASSWORD,
   database: process.env.DB_NAME,
+  charset: 'utf8mb4',
   waitForConnections: true,
-  connectionLimit: 10,
+  connectionLimit: toInt(process.env.DB_POOL_SIZE, 10),
   queueLimit: 0,
-  connectTimeout: 15000,
+  connectTimeout: DB_CONNECT_TIMEOUT,
   enableKeepAlive: true,
   keepAliveInitialDelay: 10000,
+  // Managed MySQL providers (Aiven, PlanetScale, Azure, ...) reject plaintext
+  // connections; enable TLS with DB_SSL=true instead of failing with ETIMEDOUT.
+  ...(DB_SSL_ENABLED
+    ? {
+        ssl: {
+          rejectUnauthorized: String(process.env.DB_SSL_REJECT_UNAUTHORIZED || '').toLowerCase() !== 'false',
+          ...(process.env.DB_SSL_CA ? { ca: process.env.DB_SSL_CA } : {}),
+        },
+      }
+    : {}),
 };
 
 export const pool = mysql.createPool(dbConfig);
+
+// ==========================================
+// SEED CONSTANTS
+// ==========================================
+
+// Open-source quick-test account: a REAL db row (never id:0) so every query stays user-scoped.
+export const DEV_USER_EMAIL = 'dev@gmail.com';
+export const DEV_USER_PASSWORD = '0000';
+
+export const STARTER_BOOK = {
+  title: 'Nova Aethel: Resonant Grid',
+  description: 'Cyber-aetheric metropolis governed by the Iron Synod. Deterministic resonant physics and conduit underworld.',
+  systemInstruction: 'STRICT ARCHITECTURE & TONE INSTRUCTIONS:\n1. Maintain absolute deterministic aether physics.\n2. Overdrawing aether causes Flux Burn.\n3. The Iron Synod executes heretics with extreme prejudice.',
+  language: 'vi',
+};
 
 const DEFAULT_MASTER_INSTRUCTION = `You are the StoryContainer Engine — a Deterministic World Simulator & Creative Writing Co-pilot operating under strict INTP cognitive architecture.
 
@@ -38,7 +79,7 @@ Before generating the canonical narrative text, you MUST output your internal re
 - Tactical & Continuity Analysis: Evaluate character psychology and consequence pathways.
 After closing </thinking>, provide your vivid story narrative.`;
 
-const SEED_LORE = [
+export const SEED_LORE = [
   {
     category: 'MagicSystem',
     title: 'Resonant Aether Weaving',
@@ -51,7 +92,7 @@ const SEED_LORE = [
     title: 'Kaelen Vance',
     aliases: 'Kael, The Spire Weaver, Unit 404',
     content: 'A former archivist turned renegade field-weaver from the upper tiers of Nova Aethel. He carries an aether-synthesized obsidian rapier and a cybernetic left eye calibrated to detect electromagnetic and aetheric flux gradients. Pragmatic, calculating, emotionally reserved, and burdened by a debt to the Iron Synod.',
-    rules: 'RULE: Kaelen will never willfully surrender his sister\'s encrypted data-core. He suffers from stage-1 Flux Burn in his left hand, requiring biometric stabilizing gloves.'
+    rules: "RULE: Kaelen will never willfully surrender his sister's encrypted data-core. He suffers from stage-1 Flux Burn in his left hand, requiring biometric stabilizing gloves."
   },
   {
     category: 'Location',
@@ -69,133 +110,96 @@ const SEED_LORE = [
   }
 ];
 
-export async function initDatabase() {
-  console.log('[DB] Connecting to MySQL and executing schema migration...');
+// ==========================================
+// PER-USER STARTER WORLD (idempotent)
+// ==========================================
+
+/**
+ * Creates (if missing) the personal starter lore book + seed entries for one user.
+ * Called on registration and for the seeded dev account.
+ * @param {number} userId
+ * @returns {Promise<number>} starter book id
+ */
+export async function ensureUserStarterWorld(userId) {
+  const uid = parseInt(userId, 10);
+  if (!uid || uid <= 0) throw new Error('ensureUserStarterWorld requires a real userId');
+
+  const [existing] = await pool.query(
+    `SELECT id FROM lore_books WHERE user_id = ? AND title = ? LIMIT 1`,
+    [uid, STARTER_BOOK.title]
+  );
+  let bookId = existing[0]?.id || null;
+
+  if (!bookId) {
+    const [res] = await pool.query(
+      `INSERT INTO lore_books (user_id, title, description, system_instruction, language) VALUES (?, ?, ?, ?, ?)`,
+      [uid, STARTER_BOOK.title, STARTER_BOOK.description, STARTER_BOOK.systemInstruction, STARTER_BOOK.language]
+    );
+    bookId = res.insertId;
+    console.log(`[DB] Starter lore book created for user ${uid} (book ${bookId}).`);
+  }
+
+  const [countRows] = await pool.query(
+    `SELECT COUNT(*) AS total FROM lore_entries WHERE user_id = ? AND book_id = ?`,
+    [uid, bookId]
+  );
+
+  if (countRows[0].total === 0) {
+    for (const item of SEED_LORE) {
+      await pool.query(
+        `INSERT INTO lore_entries (user_id, book_id, world_id, category, title, aliases, content, rules)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+        [uid, bookId, String(bookId), item.category, item.title, item.aliases, item.content, item.rules]
+      );
+    }
+    console.log(`[DB] Seeded ${SEED_LORE.length} starter lore entries for user ${uid}.`);
+  }
+
+  return bookId;
+}
+
+// ==========================================
+// SCHEMA INITIALIZATION (clean, fresh-database first)
+// ==========================================
+
+/**
+ * Creates the full schema in dependency order. Every table is defined once and
+ * completely (no incremental ALTER chains), so a brand new database is provisioned
+ * by this single call. All data tables carry user_id for strict user scoping.
+ */
+async function provisionSchema() {
+  console.log('[DB] Connecting to MySQL/MariaDB and provisioning clean schema...');
   const connection = await pool.getConnection();
   try {
-    // 1. lore_entries
-    await connection.query(`
-      CREATE TABLE IF NOT EXISTS lore_entries (
-        id INT AUTO_INCREMENT PRIMARY KEY,
-        category VARCHAR(50) NOT NULL DEFAULT 'General',
-        title VARCHAR(255) NOT NULL,
-        aliases TEXT,
-        content LONGTEXT,
-        rules TEXT,
-        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
-    `);
-    console.log('[DB] Table lore_entries verified.');
-
-    // Try fulltext index safely
-    try {
-      const [indexes] = await connection.query(`SHOW INDEX FROM lore_entries WHERE Key_name = 'idx_lore_fulltext'`);
-      if (indexes.length === 0) {
-        await connection.query(`ALTER TABLE lore_entries ADD FULLTEXT INDEX idx_lore_fulltext (content)`);
-        console.log('[DB] Fulltext index idx_lore_fulltext created.');
-      }
-    } catch (ftErr) {
-      console.warn('[DB] Fulltext index notice (will use keyword fallback if needed):', ftErr.message);
-    }
-
-    // 2. chat_sessions
-    await connection.query(`
-      CREATE TABLE IF NOT EXISTS chat_sessions (
-        id VARCHAR(64) PRIMARY KEY,
-        title VARCHAR(255) NOT NULL,
-        rolling_threshold INT DEFAULT 32768,
-        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
-    `);
-    console.log('[DB] Table chat_sessions verified.');
-
-    // 3. chat_messages
-    await connection.query(`
-      CREATE TABLE IF NOT EXISTS chat_messages (
-        id INT AUTO_INCREMENT PRIMARY KEY,
-        session_id VARCHAR(64) NOT NULL,
-        role ENUM('user', 'model', 'system') NOT NULL,
-        content LONGTEXT NOT NULL,
-        retrieved_lore_ids VARCHAR(255) DEFAULT '',
-        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-        INDEX idx_session_id (session_id)
-      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
-    `);
-    console.log('[DB] Table chat_messages verified.');
-
-    // 4. system_configs
+    // 1. system_configs (global engine configuration)
     await connection.query(`
       CREATE TABLE IF NOT EXISTS system_configs (
-        key_name VARCHAR(50) PRIMARY KEY,
+        key_name VARCHAR(64) PRIMARY KEY,
         value LONGTEXT
       ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
     `);
-    console.log('[DB] Table system_configs verified.');
 
-    // 5. api_keys_vault (Multi-Provider API Key Vault with SHA-256 Hashing & Encryption)
-    await connection.query(`
-      CREATE TABLE IF NOT EXISTS api_keys_vault (
-        id INT AUTO_INCREMENT PRIMARY KEY,
-        provider VARCHAR(32) NOT NULL DEFAULT 'gemini',
-        base_url VARCHAR(255) NULL,
-        key_hash VARCHAR(64) NOT NULL,
-        encrypted_key TEXT NOT NULL,
-        masked_key VARCHAR(32) NOT NULL,
-        status VARCHAR(32) DEFAULT 'active',
-        call_count INT DEFAULT 0,
-        request_count INT DEFAULT 0,
-        rate_limit_count INT DEFAULT 0,
-        last_used_at BIGINT NULL,
-        rate_limited_until BIGINT NULL,
-        error_msg TEXT NULL,
-        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-        UNIQUE KEY unique_provider_key (provider, key_hash)
-      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
-    `);
-    console.log('[DB] Table api_keys_vault (Multi-Provider SHA-256 secure hash) verified.');
-
-    // Migration check for api_keys_vault columns
-    try {
-      const [vaultCols] = await connection.query(
-        `SELECT COLUMN_NAME FROM INFORMATION_SCHEMA.COLUMNS 
-         WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'api_keys_vault'`
-      );
-      const vaultColNames = vaultCols.map(c => c.COLUMN_NAME);
-      if (!vaultColNames.includes('provider')) {
-        await connection.query(`ALTER TABLE api_keys_vault ADD COLUMN provider VARCHAR(32) NOT NULL DEFAULT 'gemini' AFTER id`);
-        console.log('[DB] Added provider column to api_keys_vault.');
-      }
-      if (!vaultColNames.includes('base_url')) {
-        await connection.query(`ALTER TABLE api_keys_vault ADD COLUMN base_url VARCHAR(255) NULL AFTER provider`);
-        console.log('[DB] Added base_url column to api_keys_vault.');
-      }
-      if (!vaultColNames.includes('request_count')) {
-        await connection.query(`ALTER TABLE api_keys_vault ADD COLUMN request_count INT DEFAULT 0`);
-        console.log('[DB] Added request_count column to api_keys_vault.');
-      }
-      if (!vaultColNames.includes('rate_limit_count')) {
-        await connection.query(`ALTER TABLE api_keys_vault ADD COLUMN rate_limit_count INT DEFAULT 0`);
-        console.log('[DB] Added rate_limit_count column to api_keys_vault.');
-      }
-    } catch (migErr) {
-      console.warn('[DB] api_keys_vault column migration notice:', migErr.message);
-    }
-
-    // 6. users (BYOK auth system)
+    // 2. users (Gmail-based registration + BYOK auth)
+    //    email is NULLABLE so legacy/pre-Gmail rows can exist (MariaDB allows many NULLs
+    //    under a UNIQUE key), while the API layer still requires @gmail.com for signup.
     await connection.query(`
       CREATE TABLE IF NOT EXISTS users (
         id INT AUTO_INCREMENT PRIMARY KEY,
-        username VARCHAR(50) UNIQUE NOT NULL,
+        email VARCHAR(190) NULL,
+        username VARCHAR(50) NULL,
         password_hash VARCHAR(255) NOT NULL,
-        display_name VARCHAR(100) DEFAULT '',
-        avatar_data LONGTEXT DEFAULT NULL,
-        language VARCHAR(10) DEFAULT 'vi',
-        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        display_name VARCHAR(100) NOT NULL DEFAULT '',
+        avatar_data LONGTEXT NULL,
+        language VARCHAR(10) NOT NULL DEFAULT 'vi',
+        auth_provider VARCHAR(20) NOT NULL DEFAULT 'gmail',
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+        UNIQUE KEY uq_users_email (email),
+        UNIQUE KEY uq_users_username (username)
       ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
     `);
-    console.log('[DB] Table users (BYOK auth) verified.');
 
-    // 7. user_api_keys (per-user BYOK key vault for Gemini, DeepSeek, OpenRouter, HuggingFace)
+    // 3. user_api_keys (per-user multi-provider BYOK vault)
     await connection.query(`
       CREATE TABLE IF NOT EXISTS user_api_keys (
         id INT AUTO_INCREMENT PRIMARY KEY,
@@ -205,252 +209,261 @@ export async function initDatabase() {
         key_hash VARCHAR(64) NOT NULL,
         encrypted_key TEXT NOT NULL,
         masked_key VARCHAR(32) NOT NULL,
-        status VARCHAR(32) DEFAULT 'active',
-        call_count INT DEFAULT 0,
-        request_count INT DEFAULT 0,
-        rate_limit_count INT DEFAULT 0,
+        status VARCHAR(32) NOT NULL DEFAULT 'active',
+        call_count INT NOT NULL DEFAULT 0,
+        request_count INT NOT NULL DEFAULT 0,
+        rate_limit_count INT NOT NULL DEFAULT 0,
         last_used_at BIGINT NULL,
         rate_limited_until BIGINT NULL,
         error_msg TEXT NULL,
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-        FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
-        UNIQUE KEY unique_user_provider_key (user_id, provider, key_hash)
+        UNIQUE KEY uq_user_provider_key (user_id, provider, key_hash),
+        KEY idx_user_keys_user (user_id, provider),
+        CONSTRAINT fk_user_keys_user FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
       ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
     `);
-    console.log('[DB] Table user_api_keys (per-user multi-provider BYOK vault) verified.');
+    console.log('[DB] users / system_configs / user_api_keys verified.');
 
-    // Migration check for user_api_keys columns
+    // 2b. Compatibility for databases created before this change: make email nullable
+    //     in place (no data loss). On a brand new database this block is a no-op.
     try {
-      const [userKeyCols] = await connection.query(
-        `SELECT COLUMN_NAME FROM INFORMATION_SCHEMA.COLUMNS 
-         WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'user_api_keys'`
+      const [emailCol] = await connection.query(
+        `SELECT IS_NULLABLE FROM INFORMATION_SCHEMA.COLUMNS
+         WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'users' AND COLUMN_NAME = 'email'`
       );
-      const userKeyColNames = userKeyCols.map(c => c.COLUMN_NAME);
-      if (!userKeyColNames.includes('provider')) {
-        await connection.query(`ALTER TABLE user_api_keys ADD COLUMN provider VARCHAR(32) NOT NULL DEFAULT 'gemini' AFTER user_id`);
-        console.log('[DB] Added provider column to user_api_keys.');
+      if (emailCol.length > 0 && emailCol[0].IS_NULLABLE === 'NO') {
+        await connection.query(`ALTER TABLE users MODIFY COLUMN email VARCHAR(190) NULL`);
+        console.log('[DB] users.email relaxed to NULL (legacy-safe; Gmail still enforced by the API).');
       }
-      if (!userKeyColNames.includes('base_url')) {
-        await connection.query(`ALTER TABLE user_api_keys ADD COLUMN base_url VARCHAR(255) NULL AFTER provider`);
-        console.log('[DB] Added base_url column to user_api_keys.');
-      }
-      if (!userKeyColNames.includes('request_count')) {
-        await connection.query(`ALTER TABLE user_api_keys ADD COLUMN request_count INT DEFAULT 0`);
-        console.log('[DB] Added request_count column to user_api_keys.');
-      }
-      if (!userKeyColNames.includes('rate_limit_count')) {
-        await connection.query(`ALTER TABLE user_api_keys ADD COLUMN rate_limit_count INT DEFAULT 0`);
-        console.log('[DB] Added rate_limit_count column to user_api_keys.');
-      }
-    } catch (migErr) {
-      console.warn('[DB] user_api_keys column migration notice:', migErr.message);
+    } catch (emailColErr) {
+      console.warn('[DB] users.email nullability notice:', emailColErr.message);
     }
-
-    // 8. Add user_id column to chat_sessions (backward-compat, nullable)
-    try {
-      const [cols] = await connection.query(
-        `SELECT COLUMN_NAME FROM INFORMATION_SCHEMA.COLUMNS 
-         WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'chat_sessions' AND COLUMN_NAME = 'user_id'`
-      );
-      if (cols.length === 0) {
-        await connection.query(`ALTER TABLE chat_sessions ADD COLUMN user_id INT NULL DEFAULT NULL`);
-        console.log('[DB] Added user_id column to chat_sessions.');
-      }
-    } catch (alterErr) {
-      console.warn('[DB] chat_sessions.user_id notice:', alterErr.message);
-    }
-
-    // 9. lore_books (Multi-Book / Multi-World Container)
+    // 4. lore_books (user-owned world containers)
     await connection.query(`
       CREATE TABLE IF NOT EXISTS lore_books (
         id INT AUTO_INCREMENT PRIMARY KEY,
-        user_id INT NULL,
+        user_id INT NOT NULL,
         title VARCHAR(255) NOT NULL,
         description TEXT NULL,
         system_instruction LONGTEXT NULL,
-        language VARCHAR(20) DEFAULT 'vi',
+        language VARCHAR(20) NOT NULL DEFAULT 'vi',
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-        FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+        KEY idx_books_user (user_id),
+        CONSTRAINT fk_books_user FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
       ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
     `);
-    console.log('[DB] Table lore_books verified.');
 
-    // Ensure system_instruction column in lore_books if created previously without it
-    try {
-      const [bookCols] = await connection.query(
-        `SELECT COLUMN_NAME FROM INFORMATION_SCHEMA.COLUMNS 
-         WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'lore_books' AND COLUMN_NAME = 'system_instruction'`
-      );
-      if (bookCols.length === 0) {
-        await connection.query(`ALTER TABLE lore_books ADD COLUMN system_instruction LONGTEXT NULL`);
-        console.log('[DB] Added system_instruction column to lore_books.');
-      }
-    } catch (colErr) {
-      console.warn('[DB] lore_books.system_instruction notice:', colErr.message);
-    }
+    // 5. lore_entries (user + book scoped knowledge base, fulltext searchable)
+    await connection.query(`
+      CREATE TABLE IF NOT EXISTS lore_entries (
+        id INT AUTO_INCREMENT PRIMARY KEY,
+        user_id INT NOT NULL,
+        book_id INT NOT NULL,
+        world_id VARCHAR(255) NULL,
+        category VARCHAR(50) NOT NULL DEFAULT 'General',
+        title VARCHAR(255) NOT NULL,
+        aliases TEXT NOT NULL,
+        content LONGTEXT NOT NULL,
+        rules TEXT NOT NULL,
+        metadata JSON NULL,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+        KEY idx_lore_scope (user_id, book_id),
+        KEY idx_lore_world_category (world_id, category),
+        FULLTEXT KEY idx_lore_fts (title, aliases, content),
+        CONSTRAINT fk_lore_user FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+        CONSTRAINT fk_lore_book FOREIGN KEY (book_id) REFERENCES lore_books(id) ON DELETE CASCADE
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+    `);
 
-    // 10. Ensure default seed book exists
-    let defaultBookId = null;
-    const [bookRows] = await connection.query(
-      `SELECT id FROM lore_books WHERE title = 'Nova Aethel: Resonant Grid' LIMIT 1`
-    );
-    if (bookRows.length > 0) {
-      defaultBookId = bookRows[0].id;
-    } else {
-      const [createSeedBook] = await connection.query(
-        `INSERT INTO lore_books (user_id, title, description, system_instruction, language)
-         VALUES (NULL, 'Nova Aethel: Resonant Grid', 
-                 'Cyber-aetheric metropolis governed by the Iron Synod. Deterministic resonant physics and conduit underworld.',
-                 'STRICT ARCHITECTURE & TONE INSTRUCTIONS:\n1. Maintain absolute deterministic aether physics.\n2. Overdrawing aether causes Flux Burn.\n3. The Iron Synod executes heretics with extreme prejudice.',
-                 'vi')`
-      );
-      defaultBookId = createSeedBook.insertId;
-      console.log('[DB] Default seed book "Nova Aethel: Resonant Grid" created with ID:', defaultBookId);
-    }
+    // 6. chat_sessions (user-owned chronicles linked to one lore book)
+    await connection.query(`
+      CREATE TABLE IF NOT EXISTS chat_sessions (
+        id VARCHAR(64) PRIMARY KEY,
+        user_id INT NOT NULL,
+        book_id INT NULL,
+        title VARCHAR(255) NOT NULL,
+        rolling_threshold INT NOT NULL DEFAULT 32768,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+        KEY idx_sessions_user (user_id),
+        KEY idx_sessions_book (book_id),
+        CONSTRAINT fk_sessions_user FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+        CONSTRAINT fk_sessions_book FOREIGN KEY (book_id) REFERENCES lore_books(id) ON DELETE SET NULL
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+    `);
 
-    // 11. Add book_id to lore_entries and migrate orphaned entries
-    try {
-      const [loreCols] = await connection.query(
-        `SELECT COLUMN_NAME FROM INFORMATION_SCHEMA.COLUMNS 
-         WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'lore_entries' AND COLUMN_NAME = 'book_id'`
-      );
-      if (loreCols.length === 0) {
-        await connection.query(`ALTER TABLE lore_entries ADD COLUMN book_id INT NULL`);
-        console.log('[DB] Added book_id column to lore_entries.');
-      }
+    // 7. chat_messages (user-owned, carries retrieved lore ids for audit)
+    await connection.query(`
+      CREATE TABLE IF NOT EXISTS chat_messages (
+        id INT AUTO_INCREMENT PRIMARY KEY,
+        session_id VARCHAR(64) NOT NULL,
+        user_id INT NOT NULL,
+        role ENUM('user','model','system') NOT NULL,
+        content LONGTEXT NOT NULL,
+        retrieved_lore_ids VARCHAR(255) NOT NULL DEFAULT '',
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        KEY idx_messages_session (session_id, id),
+        KEY idx_messages_user (user_id),
+        CONSTRAINT fk_messages_session FOREIGN KEY (session_id) REFERENCES chat_sessions(id) ON DELETE CASCADE,
+        CONSTRAINT fk_messages_user FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+    `);
+    console.log('[DB] lore_books / lore_entries / chat_sessions / chat_messages verified.');
 
-      // Migrate orphaned lore entries to defaultBookId
-      if (defaultBookId) {
-        await connection.query(`UPDATE lore_entries SET book_id = ? WHERE book_id IS NULL`, [defaultBookId]);
-      }
-    } catch (loreColErr) {
-      console.warn('[DB] lore_entries.book_id notice:', loreColErr.message);
-    }
-
-    // 11b. Add metadata JSON column and world_id VARCHAR(255) to lore_entries
-    try {
-      const [loreCols] = await connection.query(
-        `SELECT COLUMN_NAME FROM INFORMATION_SCHEMA.COLUMNS 
-         WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'lore_entries'`
-      );
-      const colNames = loreCols.map(c => c.COLUMN_NAME);
-
-      if (!colNames.includes('metadata')) {
-        await connection.query(`ALTER TABLE lore_entries ADD COLUMN metadata JSON NULL`);
-        console.log('[DB] Added metadata JSON column to lore_entries.');
-      }
-
-      if (!colNames.includes('world_id')) {
-        await connection.query(`ALTER TABLE lore_entries ADD COLUMN world_id VARCHAR(255) NULL`);
-        await connection.query(`UPDATE lore_entries SET world_id = CAST(book_id AS CHAR) WHERE world_id IS NULL AND book_id IS NOT NULL`);
-        console.log('[DB] Added world_id VARCHAR(255) column to lore_entries and synchronized.');
-      }
-
-      if (!colNames.includes('updated_at')) {
-        await connection.query(`ALTER TABLE lore_entries ADD COLUMN updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP`);
-        console.log('[DB] Added updated_at column to lore_entries.');
-      }
-
-      // Add indexes safely
-      try {
-        const [indexes] = await connection.query(`SHOW INDEX FROM lore_entries`);
-        const indexNames = indexes.map(i => i.Key_name);
-        if (!indexNames.includes('idx_lore_world_category')) {
-          await connection.query(`ALTER TABLE lore_entries ADD INDEX idx_lore_world_category (world_id, category)`);
-          console.log('[DB] Created index idx_lore_world_category on lore_entries.');
-        }
-        if (!indexNames.includes('idx_lore_title')) {
-          await connection.query(`ALTER TABLE lore_entries ADD INDEX idx_lore_title (title)`);
-          console.log('[DB] Created index idx_lore_title on lore_entries.');
-        }
-      } catch (idxErr) {
-        console.warn('[DB] Index notice for lore_entries:', idxErr.message);
-      }
-    } catch (metaErr) {
-      console.warn('[DB] lore_entries polymorphic columns notice:', metaErr.message);
-    }
-
-    // 11c. graph_states table (Persists React Flow nodes and edges in MySQL JSON)
+    // 8. graph_states (user-owned React Flow canvas snapshots)
     await connection.query(`
       CREATE TABLE IF NOT EXISTS graph_states (
         id VARCHAR(64) PRIMARY KEY,
-        world_id VARCHAR(255) NOT NULL UNIQUE,
+        user_id INT NOT NULL,
+        world_id VARCHAR(255) NOT NULL,
         nodes JSON NOT NULL,
         edges JSON NOT NULL,
         updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-        INDEX idx_graph_world (world_id)
+        UNIQUE KEY uq_graph_scope (user_id, world_id),
+        CONSTRAINT fk_graph_user FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
       ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
     `);
-    console.log('[DB] Table graph_states (MySQL JSON Canvas State) verified.');
 
-    // 11d. node_connections table (Persists individual visual wiring & multi-hop relations)
+    // 9. node_connections (user-owned graph wiring / multi-hop relations)
     await connection.query(`
       CREATE TABLE IF NOT EXISTS node_connections (
         id VARCHAR(64) PRIMARY KEY,
+        user_id INT NOT NULL,
         world_id VARCHAR(255) NOT NULL,
         source_node_id VARCHAR(255) NOT NULL,
         target_node_id VARCHAR(255) NOT NULL,
-        edge_type VARCHAR(50) DEFAULT 'relationship',
+        edge_type VARCHAR(50) NOT NULL DEFAULT 'relationship',
         label VARCHAR(255) NULL,
         data JSON NULL,
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-        INDEX idx_node_conn_world (world_id)
+        KEY idx_node_conn_scope (user_id, world_id),
+        CONSTRAINT fk_node_conn_user FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
       ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
     `);
-    console.log('[DB] Table node_connections verified.');
 
-    // 12. Add book_id and rolling_threshold to chat_sessions (allows linking story to specific book and persisting context window)
-    try {
-      const [sessCols] = await connection.query(
-        `SELECT COLUMN_NAME FROM INFORMATION_SCHEMA.COLUMNS 
-         WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'chat_sessions'`
-      );
-      const sessColNames = sessCols.map(c => c.COLUMN_NAME);
-      if (!sessColNames.includes('book_id')) {
-        await connection.query(`ALTER TABLE chat_sessions ADD COLUMN book_id INT NULL`);
-        console.log('[DB] Added book_id column to chat_sessions.');
-      }
-      if (!sessColNames.includes('rolling_threshold')) {
-        await connection.query(`ALTER TABLE chat_sessions ADD COLUMN rolling_threshold INT DEFAULT 32768`);
-        console.log('[DB] Added rolling_threshold column to chat_sessions.');
-      }
-    } catch (sessColErr) {
-      console.warn('[DB] chat_sessions columns migration notice:', sessColErr.message);
-    }
+    // 10. api_keys_vault (engine-level fallback pool, optionally global)
+    await connection.query(`
+      CREATE TABLE IF NOT EXISTS api_keys_vault (
+        id INT AUTO_INCREMENT PRIMARY KEY,
+        provider VARCHAR(32) NOT NULL DEFAULT 'gemini',
+        base_url VARCHAR(255) NULL,
+        key_hash VARCHAR(64) NOT NULL,
+        encrypted_key TEXT NOT NULL,
+        masked_key VARCHAR(32) NOT NULL,
+        status VARCHAR(32) NOT NULL DEFAULT 'active',
+        call_count INT NOT NULL DEFAULT 0,
+        request_count INT NOT NULL DEFAULT 0,
+        rate_limit_count INT NOT NULL DEFAULT 0,
+        last_used_at BIGINT NULL,
+        rate_limited_until BIGINT NULL,
+        error_msg TEXT NULL,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        UNIQUE KEY uq_provider_key_hash (provider, key_hash)
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+    `);
+    console.log('[DB] graph_states / node_connections / api_keys_vault verified.');
 
-    // Seed or upgrade master instruction to include <thinking> & LaTeX
-    const [instRows] = await connection.query(`SELECT value FROM system_configs WHERE key_name = 'master_system_instruction'`);
+    // 11. Seed global master system instruction
+    const [instRows] = await connection.query(
+      `SELECT value FROM system_configs WHERE key_name = 'master_system_instruction'`
+    );
     if (instRows.length === 0) {
       await connection.query(
         `INSERT INTO system_configs (key_name, value) VALUES ('master_system_instruction', ?)`,
         [DEFAULT_MASTER_INSTRUCTION]
       );
       console.log('[DB] Default master system instruction seeded.');
-    } else if (!instRows[0].value.includes('<thinking>')) {
-      await connection.query(
-        `UPDATE system_configs SET value = ? WHERE key_name = 'master_system_instruction'`,
-        [DEFAULT_MASTER_INSTRUCTION]
+    }
+
+    // 12. Seed the open-source dev account (real user row => full user scoping) + its starter world
+    const [devRows] = await connection.query(`SELECT id FROM users WHERE email = ? LIMIT 1`, [DEV_USER_EMAIL]);
+    let devUserId = devRows[0]?.id || null;
+    if (!devUserId) {
+      const devHash = await bcrypt.hash(DEV_USER_PASSWORD, 10);
+      const [devInsert] = await connection.query(
+        `INSERT INTO users (email, username, password_hash, display_name, language, auth_provider)
+         VALUES (?, ?, ?, ?, 'vi', 'local')`,
+        [DEV_USER_EMAIL, 'dev', devHash, 'INTP Dev Architect']
       );
-      console.log('[DB] Master system instruction upgraded with <thinking> and LaTeX rules.');
+      devUserId = devInsert.insertId;
+      console.log(`[DB] Dev account seeded (${DEV_USER_EMAIL} / ${DEV_USER_PASSWORD}) as user ${devUserId}.`);
     }
+    await ensureUserStarterWorld(devUserId);
 
-    // Seed default lore if table is empty
-    const [countRows] = await connection.query(`SELECT COUNT(*) as total FROM lore_entries`);
-    if (countRows[0].total === 0) {
-      for (const item of SEED_LORE) {
-        await connection.query(
-          `INSERT INTO lore_entries (book_id, category, title, aliases, content, rules) VALUES (?, ?, ?, ?, ?, ?)`,
-          [defaultBookId, item.category, item.title, item.aliases, item.content, item.rules]
-        );
-      }
-      console.log('[DB] Initial seed lore entries inserted into default book.');
-    }
+    console.log('[DB] Database provisioning completed successfully.');
 
-    console.log('[DB] Database migration and initialization completed successfully.');
   } catch (error) {
     console.error('[DB] Migration failed:', error);
     throw error;
   } finally {
     connection.release();
   }
+}
+
+/**
+ * Establish the schema connection with bounded exponential backoff so a transient
+ * ETIMEDOUT / ECONNRESET against a remote MySQL host does not abort the whole boot.
+ * Configure with DB_CONNECT_RETRIES / DB_RETRY_DELAY_MS / DB_CONNECT_TIMEOUT_MS.
+ */
+export async function initDatabase() {
+  const attempts = DB_CONNECT_RETRIES;
+  const delayMs = Math.max(250, toInt(process.env.DB_RETRY_DELAY_MS, 1500));
+
+  // Serverless: the schema is provisioned once (npm run seed / local server).
+  // Every cold start re-running CREATE TABLE + seeds burns the function timeout, so
+  // only verify connectivity. Enable DB_AUTO_MIGRATE=true for a fresh deployment.
+  if (IS_SERVERLESS && process.env.DB_AUTO_MIGRATE !== 'true') {
+    try {
+      await pool.query('SELECT 1');
+      console.log('[DB] Serverless DB connection verified (schema provisioning skipped).');
+      return;
+    } catch (err) {
+      const error = new Error(
+        `[DB] Serverless connection failed: ${err.message}. Verify DB_HOST/DB_PORT/DB_SSL in the Vercel environment variables.`
+      );
+      error.code = err.code;
+      error.cause = err;
+      throw error;
+    }
+  }
+  const retryableCodes = new Set([
+    'ETIMEDOUT',
+    'ECONNREFUSED',
+    'ECONNRESET',
+    'EHOSTUNREACH',
+    'ENETUNREACH',
+    'PROTOCOL_CONNECTION_LOST',
+  ]);
+
+  let lastError = null;
+
+  for (let attempt = 1; attempt <= attempts; attempt += 1) {
+    try {
+      await provisionSchema();
+      return;
+    } catch (err) {
+      lastError = err;
+      if (!retryableCodes.has(err.code) || attempt === attempts) break;
+      const wait = Math.min(delayMs * attempt, 15000);
+      console.warn(
+        `[DB] Connection attempt ${attempt}/${attempts} failed (${err.code || err.message}); retrying in ${wait}ms...`
+      );
+      await new Promise(resolve => setTimeout(resolve, wait));
+    }
+  }
+
+  const hint = lastError?.code === 'ETIMEDOUT'
+    ? 'Timed out reaching DB_HOST. Verify the host/port, allow this machine/IP on the MySQL server, and set DB_SSL=true when the provider requires TLS.'
+    : lastError?.code === 'ECONNREFUSED'
+      ? 'Connection refused. Verify DB_HOST/DB_PORT and that MySQL is listening on that interface.'
+      : 'Verify DB_HOST, DB_PORT, DB_USER, DB_PASSWORD and DB_NAME in .env.';
+
+  const error = new Error(
+    `[DB] Startup failed after ${attempts} attempt(s): ${lastError?.message || 'unknown error'}. ${hint}`
+  );
+  error.code = lastError?.code;
+  error.cause = lastError;
+  throw error;
 }

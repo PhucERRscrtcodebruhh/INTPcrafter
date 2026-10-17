@@ -10,14 +10,40 @@ import {
 
 export const PROVIDER_ENDPOINTS = {
   gemini: 'https://generativelanguage.googleapis.com',
+  groq: 'https://api.groq.com/openai/v1',
   deepseek: 'https://api.deepseek.com/v1',
   openrouter: 'https://openrouter.ai/api/v1',
   huggingface: 'https://api-inference.huggingface.co/v1'
 };
 
+// Exact Groq catalog IDs. Checked before the generic llama/qwen heuristics so a
+// Groq model is never mis-routed to OpenRouter.
+export const GROQ_MODEL_IDS = new Set([
+  'llama-3.1-8b-instant',
+  'llama-3.3-70b-versatile',
+  'openai/gpt-oss-120b',
+  'openai/gpt-oss-20b',
+  'whisper-large-v3',
+  'whisper-large-v3-turbo',
+  'canopylabs/orpheus-arabic-saudi',
+  'canopylabs/orpheus-v1-english',
+  'meta-llama/llama-prompt-guard-2-22m',
+  'meta-llama/llama-prompt-guard-2-86m',
+  'meta-models/muse-spark-open',
+  'minimaxai/minimax-m2.7',
+  'openai/gpt-oss-safeguard-20b',
+  'qwen/qwen3.8-27b'
+]);
+
 // Map UI Model names to upstream API Model IDs
 export function resolveModelForProvider(modelName, provider = 'deepseek') {
   const m = (modelName || '').toLowerCase().trim();
+  if (provider === 'groq') {
+    // Groq IDs are canonical already; only strip an optional routing prefix.
+    return String(modelName || '').replace(/^groq\//i, '').trim();
+  }
+
+
   
   if (provider === 'deepseek') {
     if (m.includes('reasoner') || m.includes('reasoning') || m.includes('r1') || m.includes('zero') || m.includes('0528')) {
@@ -47,6 +73,8 @@ export function resolveModelForProvider(modelName, provider = 'deepseek') {
 // Determine provider from model name
 export function detectProviderFromModel(modelName) {
   const m = (modelName || '').toLowerCase().trim();
+  if (m.startsWith('groq/') || GROQ_MODEL_IDS.has(m)) return 'groq';
+
   if (m.startsWith('deepseek-') || m.startsWith('deepseek/')) return 'deepseek';
   if (m.startsWith('openrouter/') || m.includes('llama') || m.includes('mistral') || m.includes('claude')) return 'openrouter';
   if (m.startsWith('huggingface/') || m.startsWith('hf/')) return 'huggingface';
@@ -786,7 +814,13 @@ export async function testProviderKey({ provider = 'gemini', key, baseUrl }) {
   }
 
   const targetBaseUrl = baseUrl || PROVIDER_ENDPOINTS[provider] || PROVIDER_ENDPOINTS.deepseek;
-  const testModel = provider === 'deepseek' ? 'deepseek-chat' : (provider === 'openrouter' ? 'openrouter/auto' : 'deepseek-ai/DeepSeek-R1');
+  const testModel = provider === 'deepseek'
+    ? 'deepseek-chat'
+    : provider === 'openrouter'
+      ? 'openrouter/auto'
+      : provider === 'groq'
+        ? 'llama-3.1-8b-instant'
+        : 'deepseek-ai/DeepSeek-R1';
 
   try {
     const res = await callOpenAICompatibleApi({

@@ -18,6 +18,7 @@ async function request(path, options = {}) {
     ...options,
     headers: {
       'Content-Type': 'application/json',
+      ...(authToken ? { Authorization: `Bearer ${authToken}` } : {}),
       ...(options.headers || {})
     }
   });
@@ -25,15 +26,35 @@ async function request(path, options = {}) {
   return { status: res.status, data };
 }
 
+// Every data route is user-scoped, so this suite authenticates as the dev Gmail account.
+let authToken = null;
+let starterBookId = null;
+
 async function runTests() {
   console.log('=== TEST SUITE: POLYMORPHIC LORE & GRAPH PERSISTENCE ===');
   await initDatabase();
   const server = await startServer();
 
   try {
+    // 0. Authenticate (Gmail account) + resolve the owned starter book
+    console.log('\n[TEST 0] Authenticating as dev@gmail.com and resolving owned world...');
+    const loginRes = await request('/api/auth/login', {
+      method: 'POST',
+      body: JSON.stringify({ email: 'dev@gmail.com', password: '0000' })
+    });
+    assert.strictEqual(loginRes.status, 200, `Login failed: ${JSON.stringify(loginRes.data)}`);
+    authToken = loginRes.data.token;
+
+    const booksRes = await request('/api/books');
+    assert.strictEqual(booksRes.status, 200);
+    assert.ok(booksRes.data.length > 0, 'Dev account must own a starter book');
+    starterBookId = booksRes.data[0].id;
+    console.log(`✓ Authenticated (user ${loginRes.data.user.id}) — writing into book ${starterBookId}`);
+
     // 1. Create Character Lore with CharacterMetadata
     console.log('\n[TEST 1] Creating Character Lore with Polymorphic Metadata...');
     const charPayload = {
+      book_id: starterBookId,
       category: 'Character',
       title: 'Aethel-Unit Zero',
       aliases: ['Zero', 'Archivist Prime'],
@@ -66,6 +87,7 @@ async function runTests() {
     // 2. Create MagicSystem Lore with MagicSystemMetadata
     console.log('\n[TEST 2] Creating MagicSystem Lore with LaTeX Formula Metadata...');
     const sysPayload = {
+      book_id: starterBookId,
       category: 'MagicSystem',
       title: 'Gravitational Flux Weaving',
       aliases: ['Flux Weaving', 'Grav-Weave'],
@@ -147,8 +169,8 @@ async function runTests() {
     assert.strictEqual(getGraphRes.data.edges.length, 1);
     assert.strictEqual(getGraphRes.data.edges[0].label, 'REQUIRES_ELEMENT');
 
-    // Verify node_connections table populated
-    const [connections] = await pool.query(`SELECT * FROM node_connections WHERE world_id = ?`, [testWorldId]);
+    // Verify node_connections table populated (user-scoped rows)
+    const [connections] = await pool.query(`SELECT * FROM node_connections WHERE user_id = ? AND world_id = ?`, [loginRes.data.user.id, testWorldId]);
     assert.strictEqual(connections.length, 1);
     assert.strictEqual(connections[0].source_node_id, 'node-1');
     assert.strictEqual(connections[0].target_node_id, 'node-2');

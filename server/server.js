@@ -13,6 +13,9 @@ async function start() {
     });
   } catch (err) {
     console.error('[Server] Startup failed:', err);
+    // Fail fast instead of leaving a zombie process that never binds PORT.
+    process.exitCode = 1;
+    process.exit(1);
   }
 }
 

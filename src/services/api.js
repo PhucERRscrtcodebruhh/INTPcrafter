@@ -52,6 +52,10 @@ export const api = {
     method: 'DELETE',
   }),
   getSessionMessages: (id) => request(`/sessions/${id}/messages`),
+  seedFirstSession: (sessionId, userMessage, guideMessage) => request('/chat/first-session-seed', {
+    method: 'POST',
+    body: JSON.stringify({ sessionId, userMessage, guideMessage }),
+  }),
 
   // Messages CRUD
   updateMessage: (id, content) => request(`/messages/${id}`, {
@@ -65,14 +69,14 @@ export const api = {
     method: 'DELETE',
   }),
 
-  // Auth
-  login: (username, password) => request('/auth/login', {
+  // Auth (Gmail account based)
+  login: (email, password) => request('/auth/login', {
     method: 'POST',
-    body: JSON.stringify({ username, password }),
+    body: JSON.stringify({ email, password }),
   }),
-  register: (username, password) => request('/auth/register', {
+  register: (email, password, displayName = '') => request('/auth/register', {
     method: 'POST',
-    body: JSON.stringify({ username, password }),
+    body: JSON.stringify({ email, password, displayName }),
   }),
   getMe: () => request('/auth/me'),
   uploadAvatar: (avatar) => request('/auth/avatar', {
@@ -217,6 +221,13 @@ export const api = {
   }),
   deleteLore: (id) => request(`/lore/${id}`, {
     method: 'DELETE',
+  }),
+
+  // RAG cache telemetry & manual invalidation
+  getRagStats: () => request('/rag/stats'),
+  invalidateRagCache: (bookId = null) => request('/rag/invalidate', {
+    method: 'POST',
+    body: JSON.stringify({ bookId }),
   }),
 
   // Graph State & Canvas Persistence

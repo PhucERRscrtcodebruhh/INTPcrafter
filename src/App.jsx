@@ -1,5 +1,4 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
-import Navbar from './components/Navbar';
 import ChatCanvas from './components/ChatCanvas';
 import LorebookDashboard from './components/LorebookDashboard';
 import LoginModal from './components/LoginModal';
@@ -73,33 +72,29 @@ export default function App() {
   const [keyStats, setKeyStats] = useState([]);
   const [errorMessage, setErrorMessage] = useState(null);
 
-  // Auth state — default to dev account (open-source test, id:0, no API key)
+  // Auth state — a real Gmail account is required (no anonymous / fake dev fallback)
   const [currentUser, setCurrentUser] = useState(() => {
     const saved = localStorage.getItem('storycontainer_user');
-    if (saved) {
+    const token = localStorage.getItem('storycontainer_token');
+    if (saved && token) {
       try {
         return JSON.parse(saved);
       } catch (e) {
         console.error('Failed to parse cached user:', e);
       }
     }
-    const defaultDev = {
-      id: 0,
-      username: 'dev',
-      displayName: 'INTP Dev Architect',
-      role: 'developer',
-      avatar: null
-    };
-    localStorage.setItem('storycontainer_user', JSON.stringify(defaultDev));
-    return defaultDev;
+    return null;
   });
-  const [isLoginModalOpen, setIsLoginModalOpen] = useState(false);
+  const [isLoginModalOpen, setIsLoginModalOpen] = useState(() => !localStorage.getItem('storycontainer_token'));
 
   // Language state
   const [language, setLanguage] = useState(() => {
     const saved = localStorage.getItem('storycontainer_language');
     return saved || 'vi';
   });
+
+  // Summary requirement toggle state
+  const [isSummaryReq, setIsSummaryReq] = useState(false);
 
   // Multiverse Lore Books state
   const [books, setBooks] = useState([]);
@@ -118,23 +113,13 @@ export default function App() {
 
   // Load Initial Data
   useEffect(() => {
-    loadSessions();
-    loadBooks();
-    loadKeyPoolTelemetry();
-
     // Listen for auth:logout event (from api.js 401 handler)
     const handleAuthLogout = () => {
-      const defaultDev = {
-        id: 0,
-        username: 'dev',
-        displayName: 'INTP Dev Architect',
-        role: 'developer',
-        avatar: null
-      };
-      setCurrentUser(defaultDev);
-      localStorage.setItem('storycontainer_user', JSON.stringify(defaultDev));
-      loadSessions();
-      loadBooks();
+      localStorage.removeItem('storycontainer_user');
+      localStorage.removeItem('storycontainer_token');
+      setCurrentUser(null);
+      setActiveSessionId(null);
+      setIsLoginModalOpen(true);
     };
     window.addEventListener('auth:logout', handleAuthLogout);
 
@@ -158,8 +143,14 @@ export default function App() {
     };
   }, []);
 
-  // Reload sessions & books when user changes
+  // Reload sessions & books when the signed-in user changes
   useEffect(() => {
+    if (!currentUser?.id) {
+      setSessions([]);
+      setBooks([]);
+      setKeyStats([]);
+      return;
+    }
     loadSessions();
     loadBooks();
     loadKeyPoolTelemetry();
@@ -203,6 +194,12 @@ export default function App() {
     setIsStreaming(false);
     setIsLoading(false);
     setStreamingText('');
+    setStreamingLore([]);
+    setRetrievedLore([]);
+    setHistoryStats(null);
+    setCurrentTokens(0);
+    setIsRolled(false);
+    setMessages([]);
     flushPendingRollingThresholdSave();
     setActiveSessionId(id);
   };
@@ -246,21 +243,11 @@ export default function App() {
         setSessions([newSession]);
         setActiveSessionId(newSession.id);
 
-        // Insert default first prompt and guide message via direct API
+        // Insert the onboarding guide + default prompt through the authenticated API
+        // (an unauthenticated raw fetch used to 401 silently, leaving a blank chat).
         try {
-          // Insert user's first message (default prompt)
-          await fetch('/api/chat/first-session-seed', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-              sessionId: newSession.id,
-              userMessage: DEFAULT_FIRST_PROMPT,
-              guideMessage: FIRST_SESSION_GUIDE
-            })
-          }).catch(() => {
-            // Fallback: insert directly via messages endpoints won't work (no direct insert)
-            // The guide will be shown as a local-only message
-          });
+          await api.seedFirstSession(newSession.id, DEFAULT_FIRST_PROMPT, FIRST_SESSION_GUIDE);
+          await loadMessages(newSession.id);
         } catch (seedErr) {
           console.warn('First session seed failed (non-critical):', seedErr);
         }
@@ -372,8 +359,8 @@ export default function App() {
   const checkByokKeys = () => {
     if (keyStats.length === 0) {
       setErrorMessage(
-        currentUser?.id === 0
-          ? 'Tài khoản dev (test) chưa có API Key. Vào World Config & Lorebook → Key Pool để thêm key, hoặc đăng ký tài khoản riêng.'
+        !currentUser?.id
+          ? 'Bạn chưa đăng nhập. Hãy đăng nhập bằng Gmail để sử dụng engine.'
           : 'Chưa có API Key! Vào World Config & Lorebook → Key Pool để thêm Gemini API Key (BYOK). Lấy key tại: https://aistudio.google.com/apikey'
       );
       return false;
@@ -426,11 +413,14 @@ export default function App() {
     setMessages(prev => [...prev, tempUserMsg]);
 
     let accumulatedText = '';
+    const promptToSend = isSummaryReq
+      ? `${cleanPrompt}\n\n[INTP DIRECTIVE // SUMMARY REQ: Vui lòng cung cấp thêm một đoạn tóm tắt ngắn (Summary) về các chuyển biến cốt truyện chính của cảnh này ở cuối phản hồi.]`
+      : cleanPrompt;
 
     try {
       await api.sendChatStream({
         sessionId: activeSessionId,
-        prompt: cleanPrompt,
+        prompt: promptToSend,
         model,
         temperature,
         topP,
@@ -598,52 +588,86 @@ export default function App() {
 
   const handleLogout = () => {
     localStorage.removeItem('storycontainer_token');
-    const defaultDev = {
-      id: 0,
-      username: 'dev',
-      displayName: 'INTP Dev Architect',
-      role: 'developer',
-      avatar: null
-    };
-    localStorage.setItem('storycontainer_user', JSON.stringify(defaultDev));
-    setCurrentUser(defaultDev);
+    localStorage.removeItem('storycontainer_user');
+    setCurrentUser(null);
     setActiveSessionId(null);
+    setIsLoginModalOpen(true);
   };
 
   const handleLanguageChange = (lang) => {
     setLanguage(lang);
     localStorage.setItem('storycontainer_language', lang);
-    // Persist to server if logged in as registered user
-    if (currentUser?.id > 0) {
+    // Persist to server for the signed-in account
+    if (currentUser?.id) {
       api.updateLanguage(lang).catch(() => {});
     }
   };
 
+  const userLabel = String(currentUser?.username || currentUser?.displayName || 'USR').trim() || 'USR';
+  const userAvatarSrc = typeof currentUser?.avatar === 'string' && currentUser.avatar.startsWith('data:image/')
+    ? currentUser.avatar
+    : null;
+
   return (
     <div className="h-screen w-screen flex flex-col bg-cyber-950 text-slate-200 overflow-hidden select-none font-mono">
-      {/* Top Navbar (Hidden in Zen Mode) */}
-      {!isZenMode && (
-        <Navbar
-          currentView={currentView}
-          onToggleView={(view) => setCurrentView(view)}
-          activeModel={model}
-          keyStats={keyStats}
-          loreDrawerOpen={loreDrawerOpen}
-          onToggleLoreDrawer={() => setLoreDrawerOpen(!loreDrawerOpen)}
-          retrievedCount={retrievedLore.length}
-          currentUser={currentUser}
-          onOpenLogin={() => setIsLoginModalOpen(true)}
-          onLogout={handleLogout}
-          language={language}
-          onLanguageChange={handleLanguageChange}
-          isZenMode={isZenMode}
-          onToggleZenMode={() => setIsZenMode(!isZenMode)}
-        />
-      )}
+      {/* Floating Top-Right User HUD Badge */}
+      <div className="fixed top-2.5 right-3 z-40 flex items-center">
+        {currentUser ? (
+          <div className="group flex items-center gap-2 pl-1 pr-1.5 py-1 rounded-full border border-cyan-400/35 bg-cyber-950/85 backdrop-blur-md shadow-[0_0_14px_rgba(0,240,255,0.10)] hover:border-emerald-300/60 transition-all">
+            {/* Avatar ring + live status dot */}
+            <div className="relative shrink-0">
+              <div className="w-8 h-8 rounded-full p-[1.5px] bg-gradient-to-br from-cyan-400/80 via-cyan-500/30 to-emerald-400/80 shadow-[0_0_10px_rgba(0,240,255,0.18)]">
+                <div className="w-full h-full rounded-full bg-cyber-950 border border-cyan-300/30 flex items-center justify-center overflow-hidden">
+                  {userAvatarSrc ? (
+                    <img src={userAvatarSrc} alt={userLabel} className="w-full h-full object-cover" />
+                  ) : (
+                    <span className="text-[10px] font-extrabold tracking-wider text-cyan-200 uppercase">
+                      {userLabel.slice(0, 2)}
+                    </span>
+                  )}
+                </div>
+              </div>
+              <span className="absolute -bottom-0.5 -right-0.5 w-2.5 h-2.5 rounded-full bg-emerald-400 border-2 border-cyber-950 shadow-[0_0_6px_rgba(0,255,170,0.8)]" />
+            </div>
+
+            {/* User label */}
+            <div className="hidden sm:flex flex-col leading-none pr-1">
+              <span className="text-[11px] font-bold uppercase tracking-[0.14em] text-cyan-100 truncate max-w-[120px]">
+                {userLabel}
+              </span>
+              <span className="text-[8.5px] text-emerald-400/80 tracking-[0.2em] mt-0.5 font-mono">
+                USR // ONLINE
+              </span>
+            </div>
+            <button
+              onClick={handleLogout}
+              className="w-5 h-5 rounded-full flex items-center justify-center text-slate-500 hover:text-rose-300 hover:bg-rose-950/60 text-[10px] transition-colors"
+              title="Đăng xuất"
+            >
+              ✕
+            </button>
+          </div>
+        ) : (
+          <button
+            onClick={() => setIsLoginModalOpen(true)}
+            className="flex items-center gap-2 pl-1 pr-3 py-1 rounded-full border border-cyan-400/35 bg-cyber-950/85 hover:border-emerald-300/60 text-cyan-200 text-[10px] font-bold uppercase tracking-[0.14em] shadow-glow-cyan-sm transition-all"
+          >
+            <span className="relative shrink-0">
+              <span className="w-8 h-8 rounded-full p-[1.5px] bg-gradient-to-br from-cyan-400/80 via-cyan-500/30 to-emerald-400/80 flex">
+                <span className="w-full h-full rounded-full bg-cyber-950 border border-cyan-300/30 flex items-center justify-center text-[10px] font-extrabold tracking-wider text-cyan-200">
+                  USR
+                </span>
+              </span>
+              <span className="absolute -bottom-0.5 -right-0.5 w-2.5 h-2.5 rounded-full bg-slate-500 border-2 border-cyber-950" />
+            </span>
+            Đăng nhập
+          </button>
+        )}
+      </div>
 
       {/* Floating Zen Mode Indicator when active */}
       {isZenMode && (
-        <div className="fixed top-2 right-4 z-50 flex items-center space-x-2 bg-cyber-950/90 border border-purple-500/40 px-3 py-1 rounded-full text-xs text-purple-300 backdrop-blur-md shadow-glow-cyan-sm animate-fadeIn">
+        <div className="fixed top-2 left-4 z-50 flex items-center space-x-2 bg-cyber-950/90 border border-purple-500/40 px-3 py-1 rounded-full text-xs text-purple-300 backdrop-blur-md shadow-glow-cyan-sm animate-fadeIn">
           <span className="w-2 h-2 rounded-full bg-purple-400 animate-pulse" />
           <span className="font-semibold">Zen Mode</span>
           <span className="text-[10px] text-slate-400 font-mono hidden sm:inline">(Ctrl+\)</span>
@@ -716,6 +740,12 @@ export default function App() {
             onLinkBook={handleLinkBookToSession}
             isZenMode={isZenMode}
             onAbort={handleAbortStream}
+            keyStats={keyStats}
+            currentUser={currentUser}
+            language={language}
+            onLanguageChange={handleLanguageChange}
+            isSummaryReq={isSummaryReq}
+            setIsSummaryReq={setIsSummaryReq}
           />
         ) : (
           <LorebookDashboard

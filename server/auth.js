@@ -1,19 +1,52 @@
 import { Router } from 'express';
 import bcrypt from 'bcryptjs';
 import jwt from 'jsonwebtoken';
-import { pool } from './db.js';
+import { pool, ensureUserStarterWorld, DEV_USER_EMAIL, DEV_USER_PASSWORD } from './db.js';
 
 const JWT_SECRET = process.env.JWT_SECRET || 'intp_5w4_jwt_secret_fallback_key_do_not_use_in_prod';
-const JWT_EXPIRES_IN = '7d';
+const JWT_EXPIRES_IN = process.env.JWT_EXPIRES_IN || '7d';
 const BCRYPT_SALT_ROUNDS = 10;
 
 // ==========================================
-// JWT Helpers
+// GMAIL IDENTITY HELPERS
+// ==========================================
+
+// Gmail accounts are dot-insensitive and +tag-insensitive, and googlemail.com is an alias
+// of gmail.com. Canonicalising keeps 1 human = 1 account.
+const GMAIL_RE = /^([a-z0-9](?:[a-z0-9._%+-]*[a-z0-9])?)@(gmail|googlemail)\.com$/;
+
+/**
+ * @param {string} rawEmail
+ * @returns {{email:string, local:string}|null} canonical Gmail identity, or null when invalid
+ */
+export function canonicalizeGmail(rawEmail) {
+  const email = String(rawEmail ?? '').trim().toLowerCase();
+  const match = GMAIL_RE.exec(email);
+  if (!match) return null;
+  const local = match[1].replace(/\+.*$/, '').replace(/\./g, '');
+  if (!local) return null;
+  return { email: `${local}@gmail.com`, local };
+}
+
+/** Derives a safe, unique username from the Gmail local part. */
+async function deriveUniqueUsername(local) {
+  const base = local.replace(/[^a-z0-9_]/g, '_').slice(0, 40) || `user_${Date.now().toString(36)}`;
+  const [taken] = await pool.query(`SELECT username FROM users WHERE username LIKE ?`, [`${base}%`]);
+  if (taken.length === 0) return base;
+  const seen = new Set(taken.map(r => r.username));
+  if (!seen.has(base)) return base;
+  let suffix = 1;
+  while (seen.has(`${base}_${suffix}`)) suffix += 1;
+  return `${base}_${suffix}`;
+}
+
+// ==========================================
+// JWT HELPERS
 // ==========================================
 
 export function generateToken(user) {
   return jwt.sign(
-    { userId: user.id, username: user.username },
+    { userId: user.id, email: user.email || null, username: user.username || null },
     JWT_SECRET,
     { expiresIn: JWT_EXPIRES_IN }
   );
@@ -24,190 +57,144 @@ export function verifyToken(token) {
 }
 
 // ==========================================
-// Auth Middleware
+// AUTH MIDDLEWARE (strict: no anonymous / forged fallback)
 // ==========================================
 
 /**
- * optionalAuth: Parse JWT if present, attach req.user.
- * If no token → req.user = { id: 0, username: 'dev' } (dev fallback).
- */
-export function optionalAuth(req, res, next) {
-  const authHeader = req.headers.authorization;
-  if (!authHeader || !authHeader.startsWith('Bearer ')) {
-    req.user = { id: 0, username: 'dev', displayName: 'INTP Dev Architect', role: 'developer' };
-    return next();
-  }
-
-  const token = authHeader.split(' ')[1];
-
-  // Dev token passthrough
-  if (token.startsWith('dev_token_')) {
-    req.user = { id: 0, username: 'dev', displayName: 'INTP Dev Architect', role: 'developer' };
-    return next();
-  }
-
-  try {
-    const decoded = verifyToken(token);
-    req.user = { id: decoded.userId, username: decoded.username };
-    next();
-  } catch (err) {
-    // Invalid token → fallback to dev
-    req.user = { id: 0, username: 'dev', displayName: 'INTP Dev Architect', role: 'developer' };
-    next();
-  }
-}
-
-/**
- * requireAuth: Require valid JWT or dev token. Returns 401 if missing/invalid.
+ * requireAuth: valid JWT required. Every data route is user scoped, so there is
+ * deliberately no anonymous or "dev_token" passthrough anymore.
  */
 export function requireAuth(req, res, next) {
   const authHeader = req.headers.authorization;
   if (!authHeader || !authHeader.startsWith('Bearer ')) {
-    return res.status(401).json({ error: 'Authentication required. Please login.' });
+    return res.status(401).json({ error: 'Authentication required. Please login with your Gmail account.' });
   }
 
-  const token = authHeader.split(' ')[1];
-
-  // Dev token passthrough
-  if (token.startsWith('dev_token_')) {
-    req.user = { id: 0, username: 'dev', displayName: 'INTP Dev Architect', role: 'developer' };
-    return next();
-  }
-
+  const token = authHeader.slice('Bearer '.length).trim();
   try {
     const decoded = verifyToken(token);
-    req.user = { id: decoded.userId, username: decoded.username };
-    next();
-  } catch (err) {
+    const userId = parseInt(decoded.userId, 10);
+    if (!userId || userId <= 0) {
+      return res.status(401).json({ error: 'Invalid token payload. Please login again.' });
+    }
+    req.user = { id: userId, email: decoded.email || null, username: decoded.username || null };
+    return next();
+  } catch {
     return res.status(401).json({ error: 'Invalid or expired token. Please login again.' });
   }
 }
 
-// ==========================================
-// Auth Routes
-// ==========================================
+/** Public user shape returned by every auth endpoint (never leaks the hash). */
+function publicUser(row) {
+  return {
+    id: row.id,
+    email: row.email,
+    emailMasked: String(row.email || '').replace(/^(.)(.*)(@.*)$/, (m, a, b, c) => `${a}${'*'.repeat(Math.max(b.length - 1, 1))}${b.slice(-1)}${c}`),
+    username: row.username,
+    displayName: row.display_name || row.username || row.email,
+    role: 'user',
+    avatar: row.avatar_data ? true : null,
+    language: row.language || 'vi',
+  };
+}
+
 
 const authRouter = Router();
 
-// POST /api/auth/register
+// ==========================================
+// ROUTES
+// ==========================================
+
+// POST /api/auth/register  { email, password, displayName? }
 authRouter.post('/register', async (req, res) => {
   try {
-    const { username, password } = req.body;
+    const { email, password, displayName, username } = req.body || {};
+    const identity = canonicalizeGmail(email ?? username);
 
-    if (!username || !password) {
-      return res.status(400).json({ error: 'Username and password are required.' });
+    if (!identity) {
+      return res.status(400).json({
+        error: 'Đăng ký chỉ hỗ trợ địa chỉ Gmail (@gmail.com). Ví dụ: tenban@gmail.com',
+        code: 'GMAIL_REQUIRED',
+      });
     }
 
-    const cleanUsername = username.trim();
-    const cleanPassword = password.trim();
-
-    // Validate username
-    if (cleanUsername.length < 3 || cleanUsername.length > 50) {
-      return res.status(400).json({ error: 'Username must be 3-50 characters.' });
-    }
-    if (!/^[a-zA-Z0-9_]+$/.test(cleanUsername)) {
-      return res.status(400).json({ error: 'Username can only contain letters, numbers, and underscores.' });
-    }
-    // Block reserved names
-    if (['dev', 'admin', 'system', 'root', '0'].includes(cleanUsername.toLowerCase())) {
-      return res.status(400).json({ error: 'This username is reserved.' });
-    }
-
-    // Validate password
+    const cleanPassword = String(password ?? '').trim();
     if (cleanPassword.length < 4) {
-      return res.status(400).json({ error: 'Password must be at least 4 characters.' });
+      return res.status(400).json({ error: 'Mật khẩu phải có ít nhất 4 ký tự.' });
+    }
+    if (cleanPassword.length > 128) {
+      return res.status(400).json({ error: 'Mật khẩu tối đa 128 ký tự.' });
     }
 
-    // Check duplicate
-    const [existing] = await pool.query('SELECT id FROM users WHERE username = ?', [cleanUsername]);
+    const [existing] = await pool.query(`SELECT id FROM users WHERE email = ? LIMIT 1`, [identity.email]);
     if (existing.length > 0) {
-      return res.status(409).json({ error: 'Username already taken.' });
+      return res.status(409).json({ error: 'Gmail này đã được đăng ký. Hãy đăng nhập.', code: 'EMAIL_TAKEN' });
     }
 
-    // Hash password
     const passwordHash = await bcrypt.hash(cleanPassword, BCRYPT_SALT_ROUNDS);
+    const finalUsername = await deriveUniqueUsername(identity.local);
+    const finalDisplayName = String(displayName ?? '').trim().slice(0, 100) || identity.local;
 
-    // Insert user
     const [result] = await pool.query(
-      'INSERT INTO users (username, password_hash, display_name) VALUES (?, ?, ?)',
-      [cleanUsername, passwordHash, cleanUsername]
+      `INSERT INTO users (email, username, password_hash, display_name, language, auth_provider)
+       VALUES (?, ?, ?, ?, 'vi', 'gmail')`,
+      [identity.email, finalUsername, passwordHash, finalDisplayName]
     );
 
-    const user = {
-      id: result.insertId,
-      username: cleanUsername,
-      displayName: cleanUsername,
-      role: 'user',
-      avatar: null,
-      language: 'vi'
-    };
+    // Every new account starts with its OWN private lore book (never shared).
+    try {
+      await ensureUserStarterWorld(result.insertId);
+    } catch (seedErr) {
+      console.warn('[Auth Register] Starter world seeding skipped:', seedErr.message);
+    }
 
-    const token = generateToken(user);
+    const [rows] = await pool.query(`SELECT * FROM users WHERE id = ?`, [result.insertId]);
+    const user = publicUser(rows[0]);
 
-    res.status(201).json({ success: true, user, token });
+    res.status(201).json({ success: true, user, token: generateToken(user) });
   } catch (err) {
     console.error('[Auth Register Error]:', err);
     res.status(500).json({ error: 'Registration failed: ' + err.message });
   }
 });
 
-// POST /api/auth/login
+// POST /api/auth/login  { email | username, password }
 authRouter.post('/login', async (req, res) => {
   try {
-    const { username, password } = req.body;
+    const { email, username, password } = req.body || {};
+    const rawIdentity = email ?? username;
+    const pStr = String(password ?? '').trim();
 
-    if (!username || !password) {
-      return res.status(400).json({ error: 'Username and password are required.' });
+    if (!rawIdentity || !pStr) {
+      return res.status(400).json({ error: 'Vui lòng nhập Gmail và mật khẩu.' });
     }
 
-    const uStr = String(username).trim().toLowerCase();
-    const pStr = String(password).trim();
+    // Open-source quick test account: mapped onto its REAL db row (no forged dev token).
+    const shortcut = String(rawIdentity).trim().toLowerCase();
+    const isDevShortcut = (shortcut === '0' || shortcut === 'dev') && pStr === DEV_USER_PASSWORD;
 
-    // Dev account passthrough (open-source test account, id:0, no API key)
-    if ((uStr === '0' || uStr === 'dev') && pStr === '0000') {
-      return res.json({
-        success: true,
-        user: {
-          id: 0,
-          username: 'dev',
-          displayName: 'INTP Dev Architect',
-          role: 'developer',
-          avatar: null,
-          language: 'vi'
-        },
-        token: `dev_token_${Date.now()}`
-      });
+    const identity = canonicalizeGmail(rawIdentity);
+    const lookupEmail = isDevShortcut ? DEV_USER_EMAIL : identity?.email;
+
+    let rows;
+    if (lookupEmail) {
+      [rows] = await pool.query(`SELECT * FROM users WHERE email = ? LIMIT 1`, [lookupEmail]);
+    } else {
+      [rows] = await pool.query(`SELECT * FROM users WHERE username = ? LIMIT 1`, [shortcut]);
     }
-
-    // DB lookup
-    const [rows] = await pool.query(
-      'SELECT id, username, password_hash, display_name, avatar_data, language FROM users WHERE LOWER(username) = ?',
-      [uStr]
-    );
 
     if (rows.length === 0) {
-      return res.status(401).json({ error: 'Invalid username or password.' });
+      return res.status(401).json({ error: 'Gmail hoặc mật khẩu không đúng.' });
     }
 
     const dbUser = rows[0];
-    const passwordMatch = await bcrypt.compare(pStr, dbUser.password_hash);
-
+    const passwordMatch = isDevShortcut || await bcrypt.compare(pStr, dbUser.password_hash);
     if (!passwordMatch) {
-      return res.status(401).json({ error: 'Invalid username or password.' });
+      return res.status(401).json({ error: 'Gmail hoặc mật khẩu không đúng.' });
     }
 
-    const user = {
-      id: dbUser.id,
-      username: dbUser.username,
-      displayName: dbUser.display_name || dbUser.username,
-      role: 'user',
-      avatar: dbUser.avatar_data ? true : null,
-      language: dbUser.language || 'vi'
-    };
-
-    const token = generateToken(user);
-
-    res.json({ success: true, user, token });
+    const user = publicUser(dbUser);
+    res.json({ success: true, user, token: generateToken(user) });
   } catch (err) {
     console.error('[Auth Login Error]:', err);
     res.status(500).json({ error: 'Login failed: ' + err.message });
@@ -219,51 +206,20 @@ authRouter.post('/logout', (req, res) => {
   res.json({ success: true, message: 'Logged out. Token discarded client-side.' });
 });
 
-// GET /api/auth/me (requires auth)
+// GET /api/auth/me
 authRouter.get('/me', requireAuth, async (req, res) => {
   try {
-    // Dev account
-    if (req.user.id === 0) {
-      return res.json({
-        id: 0,
-        username: 'dev',
-        displayName: 'INTP Dev Architect',
-        role: 'developer',
-        avatar: null,
-        language: 'vi'
-      });
-    }
-
-    const [rows] = await pool.query(
-      'SELECT id, username, display_name, avatar_data, language, created_at FROM users WHERE id = ?',
-      [req.user.id]
-    );
-
-    if (rows.length === 0) {
-      return res.status(404).json({ error: 'User not found.' });
-    }
-
-    const u = rows[0];
-    res.json({
-      id: u.id,
-      username: u.username,
-      displayName: u.display_name || u.username,
-      role: 'user',
-      avatar: u.avatar_data ? true : null,
-      language: u.language || 'vi',
-      createdAt: u.created_at
-    });
+    const [rows] = await pool.query(`SELECT * FROM users WHERE id = ? LIMIT 1`, [req.user.id]);
+    if (rows.length === 0) return res.status(404).json({ error: 'User not found.' });
+    res.json(publicUser(rows[0]));
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
 });
 
-// GET /api/auth/avatar (get avatar image data)
+// GET /api/auth/avatar
 authRouter.get('/avatar', requireAuth, async (req, res) => {
   try {
-    if (req.user.id === 0) {
-      return res.json({ avatar: null });
-    }
     const [rows] = await pool.query('SELECT avatar_data FROM users WHERE id = ?', [req.user.id]);
     res.json({ avatar: rows[0]?.avatar_data || null });
   } catch (err) {
@@ -271,44 +227,33 @@ authRouter.get('/avatar', requireAuth, async (req, res) => {
   }
 });
 
-// POST /api/auth/avatar (upload avatar as base64)
+// POST /api/auth/avatar
 authRouter.post('/avatar', requireAuth, async (req, res) => {
   try {
-    if (req.user.id === 0) {
-      return res.status(403).json({ error: 'Dev account cannot upload avatar. Register a real account.' });
-    }
-
-    const { avatar } = req.body;
-    if (!avatar || !avatar.startsWith('data:image/')) {
+    const { avatar } = req.body || {};
+    if (!avatar || !String(avatar).startsWith('data:image/')) {
       return res.status(400).json({ error: 'Invalid avatar format. Must be a data:image/... base64 string.' });
     }
-
-    // ~2MB limit check on the base64 string
-    if (avatar.length > 2_800_000) {
+    if (String(avatar).length > 2_800_000) {
       return res.status(400).json({ error: 'Avatar too large. Max ~2MB.' });
     }
 
     await pool.query('UPDATE users SET avatar_data = ? WHERE id = ?', [avatar, req.user.id]);
-
     res.json({ success: true, message: 'Avatar updated.' });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
 });
 
-// PUT /api/auth/language (update language preference)
+// PUT /api/auth/language
 authRouter.put('/language', requireAuth, async (req, res) => {
   try {
-    const { language } = req.body;
+    const { language } = req.body || {};
     const validLangs = ['vi', 'en', 'zh', 'ko'];
     if (!validLangs.includes(language)) {
       return res.status(400).json({ error: `Invalid language. Must be one of: ${validLangs.join(', ')}` });
     }
-
-    if (req.user.id > 0) {
-      await pool.query('UPDATE users SET language = ? WHERE id = ?', [language, req.user.id]);
-    }
-
+    await pool.query('UPDATE users SET language = ? WHERE id = ?', [language, req.user.id]);
     res.json({ success: true, language });
   } catch (err) {
     res.status(500).json({ error: err.message });
