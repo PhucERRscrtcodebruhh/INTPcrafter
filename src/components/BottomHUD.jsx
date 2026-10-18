@@ -17,6 +17,7 @@ import {
   Sparkles
 } from 'lucide-react';
 import DonutContextGauge from './DonutContextGauge';
+import MobileFloatingSendBubble from './MobileFloatingSendBubble';
 import { MODEL_SPECS, MODEL_GROUPS, formatTokenCount, getModelSpec } from '../services/tokenEstimator';
 
 // Accent tokens for the grouped model picker (Tailwind classes must be literal).
@@ -169,7 +170,26 @@ export default function BottomHUD({
     return () => document.removeEventListener('mousedown', handleClickOutside);
   }, []);
 
+  const [isMobile, setIsMobile] = useState(() => {
+    if (typeof window === 'undefined') return false;
+    return window.innerWidth <= 768 || ('ontouchstart' in window && window.innerWidth <= 1024);
+  });
+
+  useEffect(() => {
+    const checkMobile = () => {
+      setIsMobile(window.innerWidth <= 768 || ('ontouchstart' in window && window.innerWidth <= 1024));
+    };
+    checkMobile();
+    window.addEventListener('resize', checkMobile);
+    return () => window.removeEventListener('resize', checkMobile);
+  }, []);
+
   const handleKeyDown = (e) => {
+    // On mobile viewports (<= 768px or touch), Enter always inserts a normal newline without submitting
+    if (isMobile) {
+      return;
+    }
+
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault();
       if (!isBusy && prompt.trim()) {
@@ -434,8 +454,8 @@ export default function BottomHUD({
                 className="w-full min-w-0 bg-transparent px-1.5 py-1 text-[16px] md:text-xs text-slate-100 placeholder-slate-500 resize-none focus:outline-none leading-relaxed max-h-40 font-mono"
               />
 
-              {/* [Send] / [Stop] Button */}
-              <div className="shrink-0">
+              {/* [Send] / [Stop] Button — hidden on mobile in favor of draggable floating bubble */}
+              <div className="hidden md:flex shrink-0">
                 {isBusy ? (
                   <button
                     onClick={onAbort}
@@ -467,8 +487,11 @@ export default function BottomHUD({
 
             {/* Sát viền dưới bên phải của khung chat: Nút/toggle nhỏ [✓ summary req] */}
             <div className="flex items-center justify-between pt-1.5 mt-1 border-t border-slate-800/60 text-[10px]">
-              <span className="text-slate-500 font-sans hidden sm:inline">
+              <span className="text-slate-500 font-sans hidden md:inline">
                 Enter để gửi, Shift+Enter xuống dòng
+              </span>
+              <span className="text-slate-500 font-sans md:hidden">
+                Enter để xuống dòng
               </span>
 
               <div className="ml-auto flex items-center space-x-2">
@@ -586,6 +609,15 @@ export default function BottomHUD({
           </span>
         </button>
       </div>
+
+      {/* Draggable Floating Send Bubble (Mobile Only) */}
+      <MobileFloatingSendBubble
+        prompt={prompt}
+        onSend={onSend}
+        isBusy={isBusy}
+        onAbort={onAbort}
+        isMobile={isMobile}
+      />
     </div>
   );
 }
