@@ -349,17 +349,27 @@ export default function App() {
   const loadMessages = async (sessionId) => {
     try {
       const msgs = await api.getSessionMessages(sessionId);
-      setMessages(msgs);
+      setMessages(prev => {
+        if (msgs && msgs.length > 0) {
+          const hasDbModel = msgs.some(m => m.role === 'model');
+          const localPartials = prev.filter(m => m.id && String(m.id).startsWith('partial_'));
+          if (!hasDbModel && localPartials.length > 0) {
+            return [...msgs, ...localPartials];
+          }
+          return msgs;
+        }
+        return msgs || prev;
+      });
 
       // Compute estimated tokens in active context
       let totalEst = 0;
-      msgs.forEach(m => {
+      (msgs || []).forEach(m => {
         totalEst += estimateTokens(m.content) + 4;
       });
       setCurrentTokens(totalEst);
 
       // Extract last message retrieved lore if available
-      const lastModelMsg = [...msgs].reverse().find(m => m.role === 'model' && m.retrievedLore?.length > 0);
+      const lastModelMsg = [...(msgs || [])].reverse().find(m => m.role === 'model' && m.retrievedLore?.length > 0);
       if (lastModelMsg) {
         setRetrievedLore(lastModelMsg.retrievedLore);
       } else {
@@ -469,6 +479,23 @@ export default function App() {
     isGeneratingRef.current = false;
     setIsStreaming(false);
     setIsLoading(false);
+    if (streamingText && streamingText.trim()) {
+      setMessages(prev => {
+        const last = prev[prev.length - 1];
+        if (last && last.role === 'model') return prev;
+        return [
+          ...prev,
+          {
+            id: 'partial_' + Date.now(),
+            session_id: activeSessionId,
+            role: 'model',
+            content: streamingText,
+            retrieved_lore_ids: '',
+            created_at: new Date().toISOString()
+          }
+        ];
+      });
+    }
     setStreamingText('');
   };
 
@@ -552,12 +579,53 @@ export default function App() {
           loadKeyPoolTelemetry();
         },
         onError: (err) => {
-          if (err.name === 'AbortError' || err.message?.includes('aborted')) return;
+          if (err.name === 'AbortError' || err.message?.includes('aborted')) {
+            if (accumulatedText && accumulatedText.trim()) {
+              setMessages(prev => {
+                const last = prev[prev.length - 1];
+                if (last && last.role === 'model') return prev;
+                return [...prev, {
+                  id: 'partial_' + Date.now(),
+                  session_id: activeSessionId,
+                  role: 'model',
+                  content: accumulatedText,
+                  retrieved_lore_ids: '',
+                  created_at: new Date().toISOString()
+                }];
+              });
+            }
+            setIsStreaming(false);
+            setIsLoading(false);
+            setStreamingText('');
+            return;
+          }
           console.error('Chat stream error:', err);
-          const prefix = err.type === 'rate_limit' ? '⏱️ Rate Limit (429): ' : (err.type === 'auth' ? '🔑 Auth Error: ' : '⚠️ Error: ');
+          const prefix = err.type === 'rate_limit'
+            ? '⏱️ Rate Limit (429): '
+            : (err.type === 'auth'
+              ? '🔑 Auth Error: '
+              : (err.type === 'network' ? '🌐 Network Error: ' : '⚠️ Error: '));
           setErrorMessage(prefix + (err.message || 'Error executing world simulation stream'));
           setIsStreaming(false);
           setIsLoading(false);
+
+          const textToKeep = accumulatedText || err.partialText || '';
+          if (textToKeep && textToKeep.trim()) {
+            setMessages(prev => {
+              const last = prev[prev.length - 1];
+              if (last && last.role === 'model') {
+                return prev.map((m, idx) => idx === prev.length - 1 ? { ...m, content: m.content || textToKeep } : m);
+              }
+              return [...prev, {
+                id: 'partial_' + Date.now(),
+                session_id: activeSessionId,
+                role: 'model',
+                content: textToKeep,
+                retrieved_lore_ids: '',
+                created_at: new Date().toISOString()
+              }];
+            });
+          }
           setStreamingText('');
           loadMessages(activeSessionId);
         }
@@ -565,9 +633,29 @@ export default function App() {
     } catch (err) {
       if (err.name !== 'AbortError' && !err.message?.includes('aborted')) {
         console.error('Chat error:', err);
-        const prefix = err.type === 'rate_limit' ? '⏱️ Rate Limit (429): ' : (err.type === 'auth' ? '🔑 Auth Error: ' : '⚠️ Error: ');
+        const prefix = err.type === 'rate_limit'
+          ? '⏱️ Rate Limit (429): '
+          : (err.type === 'auth'
+            ? '🔑 Auth Error: '
+            : (err.type === 'network' ? '🌐 Network Error: ' : '⚠️ Error: '));
         const msg = prefix + (err.message || 'Error executing world simulation');
         setErrorMessage(msg);
+        if (accumulatedText && accumulatedText.trim()) {
+          setMessages(prev => {
+            const last = prev[prev.length - 1];
+            if (last && last.role === 'model') {
+              return prev.map((m, idx) => idx === prev.length - 1 ? { ...m, content: m.content || accumulatedText } : m);
+            }
+            return [...prev, {
+              id: 'partial_' + Date.now(),
+              session_id: activeSessionId,
+              role: 'model',
+              content: accumulatedText,
+              retrieved_lore_ids: '',
+              created_at: new Date().toISOString()
+            }];
+          });
+        }
         loadMessages(activeSessionId);
       }
     } finally {

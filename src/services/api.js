@@ -117,7 +117,8 @@ export const api = {
         const errorData = await response.json().catch(() => ({}));
         const err = new Error(errorData.error || `HTTP error ${response.status}`);
         err.status = response.status;
-        err.type = response.status === 429 ? 'rate_limit' : (response.status === 401 ? 'auth' : 'server');
+        const is429 = response.status === 429 || (errorData.error && String(errorData.error).includes('RESOURCE_EXHAUSTED'));
+        err.type = is429 ? 'rate_limit' : (response.status === 401 ? 'auth' : (response.status === 504 ? 'network' : 'server'));
         throw err;
       }
 
@@ -161,8 +162,12 @@ export const api = {
                 onDone(parsed);
               } else if (eventType === 'error') {
                 const streamErr = new Error(parsed.error || 'Generation stream error');
-                streamErr.type = parsed.type || 'server';
+                streamErr.type = parsed.type || (parsed.status === 429 ? 'rate_limit' : 'server');
+                streamErr.code = parsed.code;
                 streamErr.status = parsed.status || 500;
+                streamErr.details = parsed.details;
+                streamErr.hasStreamStarted = parsed.hasStreamStarted;
+                streamErr.partialText = parsed.partialText;
                 if (onError) onError(streamErr);
               }
             } catch (e) {

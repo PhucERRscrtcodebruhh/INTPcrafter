@@ -622,6 +622,7 @@ app.post('/api/chat/stream', requireAuth, async (req, res) => {
 
   let hasStreamStarted = false;
   let insertedUserMessageId = null;
+  let accumulatedReplyText = '';
   const keepAliveInterval = setInterval(() => {
     if (!res.writableEnded) {
       res.write(': keep-alive\n\n');
@@ -730,6 +731,7 @@ app.post('/api/chat/stream', requireAuth, async (req, res) => {
       },
       onChunk: (chunkText) => {
         hasStreamStarted = true;
+        accumulatedReplyText += chunkText;
         res.write(`event: chunk\ndata: ${JSON.stringify({ text: chunkText })}\n\n`);
       }
     });
@@ -782,20 +784,43 @@ app.post('/api/chat/stream', requireAuth, async (req, res) => {
         [insertedUserMessageId, userId]
       ).catch(() => {});
     }
+
+    const partialToSave = accumulatedReplyText || err.partialText || '';
+    if ((hasStreamStarted || err.hasStreamStarted) && partialToSave.trim()) {
+      try {
+        await pool.query(
+          `INSERT INTO chat_messages (session_id, user_id, role, content, retrieved_lore_ids) VALUES (?, ?, 'model', ?, ?)`,
+          [sessionId, userId, partialToSave, retrievedLoreIds]
+        );
+      } catch (insertErr) {
+        console.warn('[Stream API Error] Failed to persist partial model reply:', insertErr.message);
+      }
+    }
+
     const errMsg = err.message || 'Stream generation failed';
     const status = err.status || 0;
     const lower = errMsg.toLowerCase();
-    const isRateLimit = status === 429 || errMsg.includes('429') || errMsg.includes('EXHAUSTED') || lower.includes('quota') || lower.includes('rate limit');
-    const isAuth = status === 401 || status === 403 || errMsg.includes('API_KEY_INVALID') || lower.includes('unauthorized') || lower.includes('incorrect api key');
-    const errorType = isRateLimit ? 'rate_limit' : (isAuth ? 'auth' : 'server');
+    const isRateLimit = status === 429 || errMsg.includes('RESOURCE_EXHAUSTED');
+    const isAuth = status === 401 || status === 403 || errMsg.includes('API_KEY_INVALID') || lower.includes('unauthorized') || lower.includes('incorrect api key') || errMsg.includes('UNAUTHENTICATED');
+    const isNetworkError = err.code === 'STREAM_STALLED' || 
+      err.code === 'NETWORK_TIMEOUT' || 
+      err.code === 'STREAM_TIMEOUT' || 
+      status === 504 || 
+      /aborted|stalled|timeout|network|econnreset|socket hang up|fetch failed/i.test(errMsg);
+    const networkCode = (err.code === 'NETWORK_TIMEOUT' || (!hasStreamStarted && !err.hasStreamStarted))
+      ? 'NETWORK_TIMEOUT'
+      : 'STREAM_STALLED';
+    const errorType = isRateLimit ? 'rate_limit' : (isAuth ? 'auth' : (isNetworkError ? 'network' : 'server'));
 
     if (hasStreamStarted || err.hasStreamStarted) {
       res.write(`event: error\ndata: ${JSON.stringify({
         error: "Stream interrupted mid-generation",
         details: errMsg,
-        status: status || (isRateLimit ? 429 : 500),
+        status: status || (isRateLimit ? 429 : (isNetworkError ? 504 : 500)),
+        code: isNetworkError ? networkCode : err.code,
         type: errorType,
-        hasStreamStarted: true
+        hasStreamStarted: true,
+        partialText: partialToSave
       })}\n\n`);
       res.write(`event: end\ndata: ${JSON.stringify({ done: true })}\n\n`);
       res.end();
@@ -805,7 +830,8 @@ app.post('/api/chat/stream', requireAuth, async (req, res) => {
     res.write(`event: error\ndata: ${JSON.stringify({
       error: errMsg,
       type: errorType,
-      status: status || (isRateLimit ? 429 : (isAuth ? 401 : 500)),
+      code: isNetworkError ? networkCode : err.code,
+      status: status || (isRateLimit ? 429 : (isAuth ? 401 : (isNetworkError ? 504 : 500))),
       hasStreamStarted: false
     })}\n\n`);
     res.end();

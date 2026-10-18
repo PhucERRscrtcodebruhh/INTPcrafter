@@ -96,6 +96,7 @@ export async function callOpenAICompatibleStream({
   onChunk,
   extraHeaders = {},
   streamTimeout = 60000,
+  ttftTimeout = 120000,
   signal
 }) {
   const url = `${baseUrl.replace(/\/+$/, '')}/chat/completions`;
@@ -151,12 +152,18 @@ export async function callOpenAICompatibleStream({
     }
   }
 
+  // Bounded timeouts: allow fast unit tests (streamTimeout < 10000), otherwise enforce at least 60s chunk threshold and 120s TTFT
+  const chunkTimeoutMs = streamTimeout < 10000 ? streamTimeout : Math.max(streamTimeout, 60000);
+  const ttftTimeoutMs = (ttftTimeout && ttftTimeout < 10000)
+    ? ttftTimeout
+    : (streamTimeout < 10000 ? streamTimeout : Math.max(ttftTimeout || 120000, 120000));
+
   let connTimeoutId = setTimeout(() => {
-    const timeoutErr = new Error(`Initial connection timeout exceeded (${Math.round(streamTimeout / 1000)}s)`);
+    const timeoutErr = new Error(`Initial connection timeout exceeded (${Math.round(ttftTimeoutMs / 1000)}s)`);
     timeoutErr.status = 504;
     timeoutErr.code = 'STREAM_TIMEOUT';
     controller.abort(timeoutErr);
-  }, streamTimeout);
+  }, ttftTimeoutMs);
 
   let response;
   try {
@@ -170,7 +177,7 @@ export async function callOpenAICompatibleStream({
     if (controller.signal.aborted) {
       const reason = controller.signal.reason;
       if (reason instanceof Error) throw reason;
-      const timeoutErr = new Error(`Initial connection timeout exceeded (${Math.round(streamTimeout / 1000)}s)`);
+      const timeoutErr = new Error(`Initial connection timeout exceeded (${Math.round(ttftTimeoutMs / 1000)}s)`);
       timeoutErr.status = 504;
       timeoutErr.code = 'STREAM_TIMEOUT';
       throw timeoutErr;
@@ -203,18 +210,24 @@ export async function callOpenAICompatibleStream({
   let reasoningText = '';
   let isReasoningOpen = false;
   let buffer = '';
+  let isFirstChunk = true;
 
   try {
     while (true) {
       let idleTimeoutId;
+      const currentTimeout = isFirstChunk ? ttftTimeoutMs : chunkTimeoutMs;
       const idleTimeoutPromise = new Promise((_, reject) => {
         idleTimeoutId = setTimeout(() => {
-          const timeoutErr = new Error(`Stream idle timeout exceeded (${Math.round(streamTimeout / 1000)}s)`);
+          const timeoutErr = new Error(
+            isFirstChunk
+              ? `Time-To-First-Token (TTFT) timeout exceeded (${Math.round(currentTimeout / 1000)}s)`
+              : `Stream idle timeout exceeded (${Math.round(currentTimeout / 1000)}s)`
+          );
           timeoutErr.status = 504;
           timeoutErr.code = 'STREAM_TIMEOUT';
           controller.abort(timeoutErr);
           reject(timeoutErr);
-        }, streamTimeout);
+        }, currentTimeout);
       });
 
       let readResult;
@@ -248,6 +261,7 @@ export async function callOpenAICompatibleStream({
 
             // DeepSeek-R1 reasoning content handling
             if (delta.reasoning_content) {
+              isFirstChunk = false;
               if (!isReasoningOpen) {
                 isReasoningOpen = true;
                 const openTag = '<think>\n';
@@ -260,6 +274,7 @@ export async function callOpenAICompatibleStream({
             }
 
             if (delta.content) {
+              isFirstChunk = false;
               if (isReasoningOpen) {
                 isReasoningOpen = false;
                 const closeTag = '\n</think>\n\n';
@@ -281,12 +296,20 @@ export async function callOpenAICompatibleStream({
     } catch {}
     if (controller.signal.aborted) {
       const reason = controller.signal.reason;
-      if (reason instanceof Error) throw reason;
-      const timeoutErr = new Error(`Stream idle timeout exceeded (${Math.round(streamTimeout / 1000)}s)`);
+      if (reason instanceof Error) {
+        reason.hasStreamStarted = !isFirstChunk;
+        reason.partialText = fullText;
+        throw reason;
+      }
+      const timeoutErr = new Error(`Stream idle timeout exceeded (${Math.round(chunkTimeoutMs / 1000)}s)`);
       timeoutErr.status = 504;
       timeoutErr.code = 'STREAM_TIMEOUT';
+      timeoutErr.hasStreamStarted = !isFirstChunk;
+      timeoutErr.partialText = fullText;
       throw timeoutErr;
     }
+    streamErr.hasStreamStarted = !isFirstChunk;
+    streamErr.partialText = fullText;
     throw streamErr;
   } finally {
     try {
@@ -557,7 +580,7 @@ export class ProviderKeyPool {
     }
   }
 
-  async executeStreamWithRotation({ model, messages, systemInstruction, generationConfig, onChunk, streamTimeout = 60000, singleKeyMode = false }) {
+  async executeStreamWithRotation({ model, messages, systemInstruction, generationConfig, onChunk, streamTimeout = 60000, ttftTimeout = 120000, singleKeyMode = false }) {
     await this.init();
     if (this.keys.length === 0) {
       throw new Error(`NO_API_KEYS: No API keys configured for provider '${this.provider}'.`);
@@ -621,7 +644,8 @@ export class ProviderKeyPool {
           topP: generationConfig?.topP ?? 0.95,
           maxTokens: generationConfig?.maxOutputTokens ?? 4096,
           onChunk: wrappedOnChunk,
-          streamTimeout
+          streamTimeout,
+          ttftTimeout
         });
 
         keyObj.callCount = (keyObj.callCount || 0) + 1;
@@ -644,12 +668,18 @@ export class ProviderKeyPool {
         lastError = err;
         console.warn(`[ProviderKeyPool ${this.provider}] Key #${keyObj.id} failed:`, errMsg);
 
+        const is429 = status === 429 || errMsg.includes('RESOURCE_EXHAUSTED');
+        const isNetworkError = err.code === 'STREAM_STALLED' || 
+          err.code === 'NETWORK_TIMEOUT' || 
+          err.code === 'STREAM_TIMEOUT' || 
+          status === 504 || 
+          /aborted|stalled|timeout|network|econnreset|socket hang up|fetch failed/i.test(errMsg);
+
         // If chunks have already started streaming to the client, STRICTLY FORBID key rotation
         if (hasStreamStarted) {
           console.warn(`[ProviderKeyPool ${this.provider}] Stream interrupted mid-generation on Key #${keyObj.id}. Mid-stream rotation strictly forbidden.`);
           err.hasStreamStarted = true;
-          const is429 = status === 429 || errMsg.includes('429') || lowerMsg.includes('quota') || lowerMsg.includes('rate limit');
-          if (is429) {
+          if (is429 && !isNetworkError) {
             keyObj.rateLimitCount = (keyObj.rateLimitCount || 0) + 1;
             keyObj.status = 'rate_limited';
             keyObj.rateLimitedUntil = Date.now() + 60000;
@@ -662,17 +692,17 @@ export class ProviderKeyPool {
           throw err;
         }
 
-        const is429 = status === 429 || errMsg.includes('429') || lowerMsg.includes('quota') || lowerMsg.includes('rate limit') || lowerMsg.includes('rate_limit') || lowerMsg.includes('resource_exhausted');
-        const isAuthError = status === 401 || status === 403 || 
+        const isAuthError = (status === 401 || status === 403) && (
           errMsg.includes('API_KEY_INVALID') || 
           lowerMsg.includes('invalid api key') || 
           lowerMsg.includes('incorrect api key') || 
           lowerMsg.includes('unauthorized') || 
-          lowerMsg.includes('authentication failed');
+          lowerMsg.includes('authentication failed')
+        );
 
-        previousErrorWas429 = is429;
+        previousErrorWas429 = is429 && !isNetworkError;
 
-        if (is429) {
+        if (is429 && !isNetworkError) {
           keyObj.rateLimitCount = (keyObj.rateLimitCount || 0) + 1;
           keyObj.status = 'rate_limited';
           keyObj.rateLimitedUntil = Date.now() + 60000;
@@ -709,6 +739,7 @@ export async function dispatchStreamingGeneration({
   generationConfig = {},
   onChunk,
   streamTimeout = 60000,
+  ttftTimeout = 120000,
   singleKeyMode = false
 }) {
   const provider = detectProviderFromModel(requestedModel);
@@ -730,6 +761,7 @@ export async function dispatchStreamingGeneration({
       generationConfig,
       onChunk: trackingOnChunk,
       streamTimeout,
+      ttftTimeout,
       singleKeyMode
     });
   }
@@ -744,6 +776,7 @@ export async function dispatchStreamingGeneration({
       generationConfig,
       onChunk: trackingOnChunk,
       streamTimeout,
+      ttftTimeout,
       singleKeyMode
     });
     return result;
@@ -776,7 +809,8 @@ export async function dispatchStreamingGeneration({
           systemInstruction,
           generationConfig,
           onChunk: trackingOnChunk,
-          streamTimeout
+          streamTimeout,
+          ttftTimeout
         });
         return {
           ...fallbackResult,
@@ -798,7 +832,8 @@ export async function dispatchStreamingGeneration({
           systemInstruction,
           generationConfig,
           onChunk: trackingOnChunk,
-          streamTimeout
+          streamTimeout,
+          ttftTimeout
         });
         return {
           ...fallbackResult,

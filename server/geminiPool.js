@@ -360,10 +360,15 @@ export class GeminiKeyPool {
         const errMsg = err.message || 'Unknown API Error';
         console.warn(`[KeyPool] Key #${keyObj.id} failed:`, errMsg);
 
-        const is429 = status === 429 || errMsg.includes('429') || errMsg.includes('RESOURCE_EXHAUSTED') || errMsg.includes('quota');
-        previousErrorWas429 = is429;
+        const is429 = status === 429 || errMsg.includes('RESOURCE_EXHAUSTED');
+        const isNetworkError = err.code === 'STREAM_STALLED' || 
+          err.code === 'NETWORK_TIMEOUT' || 
+          err.code === 'STREAM_TIMEOUT' || 
+          status === 504 || 
+          /aborted|stalled|timeout|network|econnreset|socket hang up|fetch failed/i.test(errMsg);
+        previousErrorWas429 = is429 && !isNetworkError;
 
-        if (is429) {
+        if (is429 && !isNetworkError) {
           // Rate-limited: 60s cooldown, increment rate limit counter
           keyObj.rateLimitCount = (keyObj.rateLimitCount || 0) + 1;
           keyObj.status = 'rate_limited';
@@ -389,7 +394,7 @@ export class GeminiKeyPool {
     throw new Error(`ROTATION_EXHAUSTED: Failed after attempting all ${this.keys.length} available keys in pool.`);
   }
 
-  async executeStreamWithFallback({ model, contents, systemInstruction, generationConfig, onChunk, streamTimeout = 60000, singleKeyMode = false }) {
+  async executeStreamWithFallback({ model, contents, systemInstruction, generationConfig, onChunk, streamTimeout = 60000, ttftTimeout = 120000, singleKeyMode = false }) {
     await this.init();
     if (this.keys.length === 0) {
       throw new Error('NO_API_KEYS: No Gemini API keys configured in Key Pool. Please add keys in World Config Dashboard.');
@@ -460,26 +465,56 @@ export class GeminiKeyPool {
           config.systemInstruction = systemInstruction;
         }
 
-        const responseStream = await ai.models.generateContentStream({
-          model: targetModel,
-          contents,
-          config
+        // Bounded timeouts: allow fast unit tests (streamTimeout < 10000), otherwise enforce at least 60s chunk threshold and 120s TTFT
+        const chunkTimeoutMs = streamTimeout < 10000 ? streamTimeout : Math.max(streamTimeout, 60000);
+        const ttftTimeoutMs = (ttftTimeout && ttftTimeout < 10000)
+          ? ttftTimeout
+          : (streamTimeout < 10000 ? streamTimeout : Math.max(ttftTimeout || 120000, 120000));
+
+        let ttftTimerId;
+        const ttftTimeoutPromise = new Promise((_, reject) => {
+          ttftTimerId = setTimeout(() => {
+            const timeoutErr = new Error(`Time-To-First-Token (TTFT) timeout exceeded (${Math.round(ttftTimeoutMs / 1000)}s)`);
+            timeoutErr.status = 504;
+            timeoutErr.code = 'NETWORK_TIMEOUT';
+            reject(timeoutErr);
+          }, ttftTimeoutMs);
         });
+
+        let responseStream;
+        try {
+          responseStream = await Promise.race([
+            ai.models.generateContentStream({
+              model: targetModel,
+              contents,
+              config
+            }),
+            ttftTimeoutPromise
+          ]);
+        } finally {
+          clearTimeout(ttftTimerId);
+        }
 
         let fullText = '';
         let finishReason = 'STOP';
         let usageMetadata = null;
+        let isFirstChunk = true;
 
         const iterator = responseStream[Symbol.asyncIterator]();
         while (true) {
           let idleTimeoutId;
+          const currentTimeout = isFirstChunk ? ttftTimeoutMs : chunkTimeoutMs;
           const idleTimeoutPromise = new Promise((_, reject) => {
             idleTimeoutId = setTimeout(() => {
-              const timeoutErr = new Error(`Stream idle timeout exceeded (${Math.round(streamTimeout / 1000)}s)`);
+              const timeoutErr = new Error(
+                isFirstChunk
+                  ? `Time-To-First-Token (TTFT) timeout exceeded (${Math.round(currentTimeout / 1000)}s)`
+                  : `Stream chunk inactivity timeout exceeded (${Math.round(currentTimeout / 1000)}s)`
+              );
               timeoutErr.status = 504;
-              timeoutErr.code = 'STREAM_TIMEOUT';
+              timeoutErr.code = isFirstChunk ? 'NETWORK_TIMEOUT' : 'STREAM_STALLED';
               reject(timeoutErr);
-            }, streamTimeout);
+            }, currentTimeout);
           });
 
           let iterResult;
@@ -496,6 +531,7 @@ export class GeminiKeyPool {
           const chunk = iterResult.value;
           const chunkText = chunk.text || '';
           if (chunkText) {
+            isFirstChunk = false;
             fullText += chunkText;
             if (wrappedOnChunk) {
               wrappedOnChunk(chunkText);
@@ -531,12 +567,19 @@ export class GeminiKeyPool {
         lastError = err;
         console.warn(`[KeyPool Stream] Key #${keyObj.id} failed:`, errMsg);
 
+        const is429 = status === 429 || errMsg.includes('RESOURCE_EXHAUSTED');
+        const isNetworkError = err.code === 'STREAM_STALLED' || 
+          err.code === 'NETWORK_TIMEOUT' || 
+          err.code === 'STREAM_TIMEOUT' || 
+          status === 504 || 
+          /aborted|stalled|timeout|network|econnreset|socket hang up|fetch failed/i.test(errMsg);
+
         // If chunks have already started streaming, STRICTLY FORBID key rotation
         if (hasStreamStarted) {
           console.warn(`[KeyPool Stream] Key #${keyObj.id} failed mid-stream. Mid-stream rotation strictly forbidden.`);
           err.hasStreamStarted = true;
-          const is429 = status === 429 || errMsg.includes('429') || errMsg.includes('RESOURCE_EXHAUSTED') || errMsg.includes('quota');
-          if (is429) {
+          err.partialText = fullText;
+          if (is429 && !isNetworkError) {
             keyObj.rateLimitCount = (keyObj.rateLimitCount || 0) + 1;
             keyObj.status = 'rate_limited';
             keyObj.rateLimitedUntil = Date.now() + 60000;
@@ -549,10 +592,9 @@ export class GeminiKeyPool {
           throw err;
         }
 
-        const is429 = status === 429 || errMsg.includes('429') || errMsg.includes('RESOURCE_EXHAUSTED') || errMsg.includes('quota');
-        previousErrorWas429 = is429;
+        previousErrorWas429 = is429 && !isNetworkError;
 
-        if (is429) {
+        if (is429 && !isNetworkError) {
           keyObj.rateLimitCount = (keyObj.rateLimitCount || 0) + 1;
           keyObj.status = 'rate_limited';
           keyObj.rateLimitedUntil = Date.now() + 60000;
