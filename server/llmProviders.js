@@ -557,7 +557,7 @@ export class ProviderKeyPool {
     }
   }
 
-  async executeStreamWithRotation({ model, messages, systemInstruction, generationConfig, onChunk, streamTimeout = 60000 }) {
+  async executeStreamWithRotation({ model, messages, systemInstruction, generationConfig, onChunk, streamTimeout = 60000, singleKeyMode = false }) {
     await this.init();
     if (this.keys.length === 0) {
       throw new Error(`NO_API_KEYS: No API keys configured for provider '${this.provider}'.`);
@@ -565,9 +565,10 @@ export class ProviderKeyPool {
 
     const rotationLogs = [];
     let attempts = 0;
-    const maxAttempts = this.keys.length;
+    const maxAttempts = singleKeyMode ? 1 : this.keys.length;
     let previousErrorWas429 = false;
     let hasStreamStarted = false;
+    let lastError = null;
 
     const wrappedOnChunk = (chunkText) => {
       hasStreamStarted = true;
@@ -577,8 +578,16 @@ export class ProviderKeyPool {
     const resolvedModel = resolveModelForProvider(model, this.provider);
 
     while (attempts < maxAttempts) {
-      const keyIdx = this.getNextKeyIndex();
+      // Single-key mode (paid tiers): always use the first active key and never
+      // rotate, so no cross-key cooldown / pool-exhausted warnings are emitted.
+      const keyIdx = singleKeyMode
+        ? this.keys.findIndex(k => k.status === 'active' && (!k.rateLimitedUntil || k.rateLimitedUntil <= Date.now()))
+        : this.getNextKeyIndex();
+
       if (keyIdx === -1) {
+        if (singleKeyMode) {
+          throw new Error(`NO_ACTIVE_KEY: The selected key for provider '${this.provider}' is unavailable. Check its status or disable Single Key Mode.`);
+        }
         const cooldowns = this.keys.map(k => k.rateLimitedUntil ? Math.max(0, Math.ceil((k.rateLimitedUntil - Date.now()) / 1000)) : 0);
         const minWait = Math.min(...cooldowns.filter(c => c > 0)) || 60;
         throw new Error(`ALL_KEYS_EXHAUSTED: All ${this.keys.length} keys for provider '${this.provider}' are rate-limited. Next cooldown in ~${minWait}s.`);
@@ -632,6 +641,7 @@ export class ProviderKeyPool {
         const status = err.status || 0;
         const errMsg = err.message || 'Unknown Provider Error';
         const lowerMsg = errMsg.toLowerCase();
+        lastError = err;
         console.warn(`[ProviderKeyPool ${this.provider}] Key #${keyObj.id} failed:`, errMsg);
 
         // If chunks have already started streaming to the client, STRICTLY FORBID key rotation
@@ -682,6 +692,7 @@ export class ProviderKeyPool {
       }
     }
 
+    if (singleKeyMode && lastError) throw lastError;
     throw new Error(`ROTATION_EXHAUSTED: Streaming failed after attempting all ${this.keys.length} keys for provider '${this.provider}'.`);
   }
 }
@@ -697,7 +708,8 @@ export async function dispatchStreamingGeneration({
   systemInstruction = '',
   generationConfig = {},
   onChunk,
-  streamTimeout = 60000
+  streamTimeout = 60000,
+  singleKeyMode = false
 }) {
   const provider = detectProviderFromModel(requestedModel);
   const rotationLogs = [];
@@ -717,7 +729,8 @@ export async function dispatchStreamingGeneration({
       systemInstruction,
       generationConfig,
       onChunk: trackingOnChunk,
-      streamTimeout
+      streamTimeout,
+      singleKeyMode
     });
   }
 
@@ -730,7 +743,8 @@ export async function dispatchStreamingGeneration({
       systemInstruction,
       generationConfig,
       onChunk: trackingOnChunk,
-      streamTimeout
+      streamTimeout,
+      singleKeyMode
     });
     return result;
   } catch (geminiErr) {

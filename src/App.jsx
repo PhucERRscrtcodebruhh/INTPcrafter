@@ -3,7 +3,14 @@ import ChatCanvas from './components/ChatCanvas';
 import LorebookDashboard from './components/LorebookDashboard';
 import LoginModal from './components/LoginModal';
 import { api } from './services/api';
-import { estimateTokens } from './services/tokenEstimator';
+import { estimateTokens, getModelSpec } from './services/tokenEstimator';
+import {
+  PROVIDER_LABELS,
+  resolveRequiredProvider,
+  getProviderKeys,
+  getActiveKeyCount,
+  hasActiveKey,
+} from './services/keyAvailability';
 
 // Default first-session guide message (inserted as model response on first session)
 const FIRST_SESSION_GUIDE = `# 🌌 Chào mừng đến với StoryContainer Engine!
@@ -35,6 +42,9 @@ AI sẽ tự động truy xuất lore liên quan (RAG) khi bạn chat.
 
 const DEFAULT_FIRST_SESSION_TITLE = 'tôi chuyển sinh thành con ng và báo thù các INTP';
 const DEFAULT_FIRST_PROMPT = 'gemigay884# sau khi bị các INTP hành cho lag máy với 20 chủ đề ko liên quan đến nhau đã nuôi ý định báo thù các INTP cho ra bã để họ nghĩ ít lại';
+
+const ACTIVE_PROVIDER_KEY = 'storycontainer_active_provider';
+const SINGLE_KEY_MODE_KEY = 'storycontainer_single_key_mode';
 
 export default function App() {
   const [currentView, setCurrentView] = useState('studio'); // 'studio' | 'lorebook'
@@ -71,6 +81,26 @@ export default function App() {
   // System & Key telemetry
   const [keyStats, setKeyStats] = useState([]);
   const [errorMessage, setErrorMessage] = useState(null);
+
+  // Key Vault routing preferences (persisted locally)
+  const [activeProvider, setActiveProvider] = useState(() => {
+    const saved = localStorage.getItem(ACTIVE_PROVIDER_KEY);
+    return ['auto', 'gemini', 'deepseek', 'openrouter', 'groq', 'huggingface'].includes(saved)
+      ? saved
+      : 'auto';
+  });
+  const [singleKeyMode, setSingleKeyMode] = useState(() => localStorage.getItem(SINGLE_KEY_MODE_KEY) === 'true');
+
+  // Required provider: explicit primary wins, otherwise follow the chosen model.
+  const modelProvider = getModelSpec(model)?.provider || 'gemini';
+  const requiredProvider = resolveRequiredProvider(activeProvider, modelProvider);
+  const requiredProviderLabel = PROVIDER_LABELS[requiredProvider] || requiredProvider;
+  const providerKeyCount = getProviderKeys(keyStats, requiredProvider).length;
+  const activeKeyCount = getActiveKeyCount(keyStats, requiredProvider);
+  const requiredProviderRef = useRef(requiredProvider);
+  useEffect(() => {
+    requiredProviderRef.current = requiredProvider;
+  }, [requiredProvider]);
 
   // Auth state — a real Gmail account is required (no anonymous / fake dev fallback)
   const [currentUser, setCurrentUser] = useState(() => {
@@ -266,6 +296,49 @@ export default function App() {
     }
   };
 
+  const handleActiveProviderChange = (provider) => {
+    const next = provider || 'auto';
+    setActiveProvider(next);
+    localStorage.setItem(ACTIVE_PROVIDER_KEY, next);
+
+    const nextRequired = resolveRequiredProvider(next, getModelSpec(model)?.provider || 'gemini');
+    if (hasActiveKey(keyStats, nextRequired)) setErrorMessage(null);
+
+    window.dispatchEvent(new CustomEvent('active-provider:changed', { detail: { provider: next } }));
+  };
+
+  const handleSingleKeyModeChange = (enabled) => {
+    const next = Boolean(enabled);
+    setSingleKeyMode(next);
+    localStorage.setItem(SINGLE_KEY_MODE_KEY, String(next));
+    window.dispatchEvent(new CustomEvent('key-mode:changed', { detail: { singleKeyMode: next } }));
+  };
+
+  // The Key Vault dispatches these events after add/delete/reset/save so the global
+  // telemetry (and the "no API key" guard) updates instantly without a reload.
+  useEffect(() => {
+    const onKeysUpdated = async () => {
+      try {
+        const keys = await api.getKeys();
+        setKeyStats(keys);
+        if (hasActiveKey(keys, requiredProviderRef.current)) setErrorMessage(null);
+      } catch (err) {
+        console.error('Failed to refresh key telemetry:', err);
+      }
+    };
+    const onProviderChanged = (e) => setActiveProvider(e.detail?.provider || 'auto');
+    const onModeChanged = (e) => setSingleKeyMode(Boolean(e.detail?.singleKeyMode));
+
+    window.addEventListener('keys:updated', onKeysUpdated);
+    window.addEventListener('active-provider:changed', onProviderChanged);
+    window.addEventListener('key-mode:changed', onModeChanged);
+    return () => {
+      window.removeEventListener('keys:updated', onKeysUpdated);
+      window.removeEventListener('active-provider:changed', onProviderChanged);
+      window.removeEventListener('key-mode:changed', onModeChanged);
+    };
+  }, []);
+
   // Load messages whenever active session changes
   useEffect(() => {
     if (activeSessionId) {
@@ -355,16 +428,36 @@ export default function App() {
     }
   };
 
-  // BYOK Guard: Check if user has API keys before sending chat
+  // BYOK Guard: only the selected/active provider is validated. A pool with a
+  // single active key is completely valid (no rotation requirement).
   const checkByokKeys = () => {
-    if (keyStats.length === 0) {
-      setErrorMessage(
-        !currentUser?.id
-          ? 'Bạn chưa đăng nhập. Hãy đăng nhập bằng Gmail để sử dụng engine.'
-          : 'Chưa có API Key! Vào World Config & Lorebook → Key Pool để thêm Gemini API Key (BYOK). Lấy key tại: https://aistudio.google.com/apikey'
-      );
+    if (!currentUser?.id) {
+      setErrorMessage('Bạn chưa đăng nhập. Hãy đăng nhập bằng Gmail để sử dụng engine.');
       return false;
     }
+
+    if (activeKeyCount < 1) {
+      const docsHint = requiredProvider === 'gemini'
+        ? ' Lấy key tại: https://aistudio.google.com/apikey'
+        : requiredProvider === 'groq'
+          ? ' Lấy key tại: https://console.groq.com/keys'
+          : '';
+      if (providerKeyCount > 0) {
+        setErrorMessage(
+          `Toàn bộ ${providerKeyCount} API Key ${requiredProviderLabel} đang tạm cooldown hoặc bị đánh dấu lỗi. ` +
+          'Mở Key Vault → Reset Cooldowns, hoặc chờ hết thời gian rate-limit.'
+        );
+      } else {
+        setErrorMessage(
+          `Chưa có API Key đang hoạt động cho ${requiredProviderLabel}. ` +
+          `Vào World Config & Lorebook → Key Pool, chọn provider ${requiredProviderLabel} và thêm ít nhất 1 key (BYOK).${docsHint}`
+        );
+      }
+      return false;
+    }
+
+    // Valid key exists -> immediately dismiss any stale warning banner.
+    setErrorMessage(null);
     return true;
   };
 
@@ -426,6 +519,7 @@ export default function App() {
         topP,
         maxOutputTokens,
         contextRollingThreshold: rollingThreshold,
+        singleKeyMode,
       }, {
         signal: abortControllerRef.current.signal,
         onRag: (ragData) => {
@@ -741,6 +835,11 @@ export default function App() {
             isZenMode={isZenMode}
             onAbort={handleAbortStream}
             keyStats={keyStats}
+            activeProvider={activeProvider}
+            requiredProvider={requiredProvider}
+            onActiveProviderChange={handleActiveProviderChange}
+            singleKeyMode={singleKeyMode}
+            onSingleKeyModeChange={handleSingleKeyModeChange}
             currentUser={currentUser}
             language={language}
             onLanguageChange={handleLanguageChange}

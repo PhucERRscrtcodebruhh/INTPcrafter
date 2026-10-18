@@ -127,6 +127,15 @@ body {
   margin: 1rem 0;
 }
 
+/* Hide scrollbars on horizontal mobile dock tracks */
+.no-scrollbar {
+  -ms-overflow-style: none;
+  scrollbar-width: none;
+}
+.no-scrollbar::-webkit-scrollbar {
+  display: none;
+}
+
 /* Pulse effects */
 @keyframes cyberPulse {
   0%, 100% { opacity: 0.4; }

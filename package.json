@@ -12,7 +12,7 @@
     "preview": "vite preview",
     "seed": "node server/seed.js",
     "test": "node tests/sanity.test.js",
-    "test:all": "node tests/sanity.test.js && node tests/graph_rag.test.js && node tests/model_registry.test.js && node tests/prefix_caching_and_streaming.test.js && node tests/messages_auth.test.js && node tests/polymorphic_lore_migration.test.js && node tests/import_lore_to_graph.test.js && node tests/gmail_scope_rag.test.js"
+    "test:all": "node tests/sanity.test.js && node tests/graph_rag.test.js && node tests/model_registry.test.js && node tests/key_availability.test.js && node tests/single_key_mode.test.js && node tests/prefix_caching_and_streaming.test.js && node tests/messages_auth.test.js && node tests/polymorphic_lore_migration.test.js && node tests/import_lore_to_graph.test.js && node tests/gmail_scope_rag.test.js"
   },
   "dependencies": {
     "@google/genai": "^2.23.0",

@@ -4,7 +4,7 @@ import dotenv from 'dotenv';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import { pool } from './db.js';
-import { keyPool, getPoolForUser, addUserKey, removeUserKey, getUserKeyStatus, resetUserKeys } from './geminiPool.js';
+import { keyPool } from './geminiPool.js';
 import {
   dispatchStreamingGeneration,
   testProviderKey,
@@ -428,6 +428,8 @@ app.post('/api/chat', requireAuth, async (req, res) => {
     topP = 0.95,
     maxOutputTokens = 4096,
     contextRollingThreshold = 32768,
+    singleKeyMode = false,
+
   } = req.body;
 
   if (!sessionId || !prompt?.trim()) {
@@ -452,13 +454,6 @@ app.post('/api/chat', requireAuth, async (req, res) => {
       return res.status(404).json({ error: 'Session not found for this account.' });
     }
     const bookId = sessionBook.book_id || null;
-
-    const userKeyPool = await getPoolForUser(userId);
-    if (userKeyPool.keys.length === 0) {
-      return res.status(400).json({
-        error: 'NO_API_KEYS: Bạn chưa thêm Gemini API Key. Vào World Config & Lorebook → Key Pool để thêm key (BYOK).'
-      });
-    }
 
     const [historyRows] = await pool.query(
       `SELECT id, role, content FROM chat_messages WHERE session_id = ? AND user_id = ? ORDER BY id ASC`,
@@ -527,6 +522,7 @@ app.post('/api/chat', requireAuth, async (req, res) => {
 
     const result = await dispatchStreamingGeneration({
       userId,
+      singleKeyMode: Boolean(singleKeyMode),
       requestedModel: model,
       messages,
       contents,
@@ -573,6 +569,7 @@ app.post('/api/chat', requireAuth, async (req, res) => {
     });
   } catch (err) {
     console.error('[Chat API Error]:', err);
+    const isKeyError = /NO_API_KEYS|NO_ACTIVE_KEY|ALL_KEYS_EXHAUSTED/.test(err.message || '');
     // The model never produced a reply: drop the optimistic user row so a retry
     // does not leave a duplicate turn behind.
     if (insertedUserMessageId) {
@@ -581,7 +578,7 @@ app.post('/api/chat', requireAuth, async (req, res) => {
         [insertedUserMessageId, userId]
       ).catch(() => {});
     }
-    res.status(500).json({
+    res.status(isKeyError ? 400 : 500).json({
       error: err.message,
       details: err.details || null
     });
@@ -598,6 +595,8 @@ app.post('/api/chat/stream', requireAuth, async (req, res) => {
     topP = 0.95,
     maxOutputTokens = 4096,
     contextRollingThreshold = 32768,
+    singleKeyMode = false,
+
   } = req.body;
 
   if (!sessionId || !prompt?.trim()) {
@@ -719,6 +718,7 @@ app.post('/api/chat/stream', requireAuth, async (req, res) => {
 
     const result = await dispatchStreamingGeneration({
       userId,
+      singleKeyMode: Boolean(singleKeyMode),
       requestedModel: model,
       messages,
       contents,

@@ -389,7 +389,7 @@ export class GeminiKeyPool {
     throw new Error(`ROTATION_EXHAUSTED: Failed after attempting all ${this.keys.length} available keys in pool.`);
   }
 
-  async executeStreamWithFallback({ model, contents, systemInstruction, generationConfig, onChunk, streamTimeout = 60000 }) {
+  async executeStreamWithFallback({ model, contents, systemInstruction, generationConfig, onChunk, streamTimeout = 60000, singleKeyMode = false }) {
     await this.init();
     if (this.keys.length === 0) {
       throw new Error('NO_API_KEYS: No Gemini API keys configured in Key Pool. Please add keys in World Config Dashboard.');
@@ -397,9 +397,10 @@ export class GeminiKeyPool {
 
     const rotationLogs = [];
     let attempts = 0;
-    const maxAttempts = this.keys.length;
+    const maxAttempts = singleKeyMode ? 1 : this.keys.length;
     let previousErrorWas429 = false;
     let hasStreamStarted = false;
+    let lastError = null;
 
     const wrappedOnChunk = (chunkText) => {
       hasStreamStarted = true;
@@ -407,8 +408,15 @@ export class GeminiKeyPool {
     };
 
     while (attempts < maxAttempts) {
-      const keyIdx = this.getNextKeyIndex();
+      // Single-key mode: pin the first active key and skip rotation entirely.
+      const keyIdx = singleKeyMode
+        ? this.keys.findIndex(k => k.status === 'active' && (!k.rateLimitedUntil || k.rateLimitedUntil <= Date.now()))
+        : this.getNextKeyIndex();
+
       if (keyIdx === -1) {
+        if (singleKeyMode) {
+          throw new Error('NO_ACTIVE_KEY: The selected Gemini key is unavailable. Check its status or disable Single Key Mode.');
+        }
         const cooldowns = this.keys.map(k => k.rateLimitedUntil ? Math.max(0, Math.ceil((k.rateLimitedUntil - Date.now()) / 1000)) : 0);
         const minWait = Math.min(...cooldowns.filter(c => c > 0)) || 60;
         throw new Error(`ALL_KEYS_EXHAUSTED: All ${this.keys.length} API keys are currently rate-limited or exhausted. Next key cooldown in ~${minWait}s.`);
@@ -520,6 +528,7 @@ export class GeminiKeyPool {
       } catch (err) {
         const status = err.status || err.statusCode || 0;
         const errMsg = err.message || 'Unknown API Error';
+        lastError = err;
         console.warn(`[KeyPool Stream] Key #${keyObj.id} failed:`, errMsg);
 
         // If chunks have already started streaming, STRICTLY FORBID key rotation
@@ -563,6 +572,7 @@ export class GeminiKeyPool {
       }
     }
 
+    if (singleKeyMode && lastError) throw lastError;
     throw new Error(`ROTATION_EXHAUSTED: Streaming failed after trying all ${this.keys.length} keys in pool.`);
   }
 

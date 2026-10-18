@@ -74,9 +74,23 @@ const PROVIDERS = [
   }
 ];
 
-export default function KeyPoolManager() {
+export default function KeyPoolManager({
+  primaryProvider = 'auto',
+  requiredProvider = 'gemini',
+  onActiveProviderChange,
+  singleKeyMode = false,
+  onSingleKeyModeChange,
+}) {
   const [activeProvider, setActiveProvider] = useState('gemini');
   const [keysList, setKeysList] = useState([]);
+
+  // Selecting a primary provider in the header also focuses its management tab.
+  useEffect(() => {
+    if (primaryProvider && primaryProvider !== 'auto') {
+      setActiveProvider(primaryProvider);
+    }
+  }, [primaryProvider]);
+
   const [customBaseUrl, setCustomBaseUrl] = useState('');
   
   const getDraftKey = (prov) => `storycontainer_key_drafts_${prov}`;
@@ -186,6 +200,7 @@ export default function KeyPoolManager() {
         localStorage.removeItem(getDraftKey(activeProvider));
       } catch (e) {}
       loadKeys(false, activeProvider);
+      window.dispatchEvent(new Event('keys:updated'));
     } catch (err) {
       setNotification({ type: 'error', message: 'Save failed: ' + err.message });
     } finally {
@@ -199,6 +214,7 @@ export default function KeyPoolManager() {
       await api.removeKey(keyId);
       setNotification({ type: 'success', message: `Key #${keyId} removed from pool.` });
       loadKeys(false, activeProvider);
+      window.dispatchEvent(new Event('keys:updated'));
     } catch (err) {
       setNotification({ type: 'error', message: 'Remove failed: ' + err.message });
     }
@@ -208,6 +224,7 @@ export default function KeyPoolManager() {
     try {
       await GeminiPoolService.resetPool(activeProvider);
       loadKeys(false, activeProvider);
+      window.dispatchEvent(new Event('keys:updated'));
       setNotification({ type: 'success', message: `All ${currentProviderConfig.name} cooldowns and error flags have been reset.` });
     } catch (err) {
       setNotification({ type: 'error', message: 'Reset failed: ' + err.message });
@@ -262,6 +279,62 @@ export default function KeyPoolManager() {
         </div>
       </div>
 
+      {/* Active Provider + Rotation Mode */}
+      <div className="flex flex-col lg:flex-row lg:items-center gap-3 p-3 rounded-xl bg-cyber-950/80 border border-cyan-500/25">
+        <div className="flex items-center gap-2 min-w-0 flex-1">
+          <Globe size={14} className="text-cyan-400 shrink-0" />
+          <span className="text-[11px] uppercase font-bold text-slate-300 tracking-wider shrink-0">
+            Active Provider
+          </span>
+          <select
+            value={primaryProvider}
+            onChange={(e) => onActiveProviderChange?.(e.target.value)}
+            className="min-w-0 flex-1 sm:flex-none bg-cyber-900 border border-cyan-500/40 rounded-lg px-2.5 py-1.5 text-xs text-cyan-200 focus:outline-none focus:border-cyan-300 cursor-pointer"
+            aria-label="Active provider"
+          >
+            <option value="auto">Auto (follow model)</option>
+            {PROVIDERS.map(p => (
+              <option key={p.id} value={p.id}>{p.name}</option>
+            ))}
+          </select>
+          <span className="hidden xl:inline text-[10px] text-slate-500 truncate">
+            Model requires:{' '}
+            <b className="text-cyan-300">
+              {PROVIDERS.find(p => p.id === requiredProvider)?.name || requiredProvider}
+            </b>
+          </span>
+        </div>
+
+        <div className="flex items-center justify-between gap-3 lg:ml-auto">
+          <div className="leading-tight">
+            <span className="block text-[11px] font-bold text-slate-300 uppercase tracking-wider">
+              Single Key Mode
+            </span>
+            <span className="block text-[10px] text-slate-500">
+              Disable rotation / pool cooldowns
+            </span>
+          </div>
+          <button
+            type="button"
+            role="switch"
+            aria-checked={singleKeyMode}
+            aria-label="Toggle single key mode"
+            onClick={() => onSingleKeyModeChange?.(!singleKeyMode)}
+            className={`relative shrink-0 w-11 h-6 rounded-full border transition-all ${
+              singleKeyMode
+                ? 'bg-emerald-500/30 border-emerald-400 shadow-glow-emerald-sm'
+                : 'bg-cyber-900 border-slate-700'
+            }`}
+          >
+            <span
+              className={`absolute top-0.5 w-5 h-5 rounded-full transition-all ${
+                singleKeyMode ? 'left-[22px] bg-emerald-400' : 'left-0.5 bg-slate-500'
+              }`}
+            />
+          </button>
+        </div>
+      </div>
+
       {/* Provider Selector Tabs */}
       <div className="grid grid-cols-2 sm:grid-cols-3 xl:grid-cols-5 gap-2">
         {PROVIDERS.map(prov => {
@@ -284,6 +357,11 @@ export default function KeyPoolManager() {
               </div>
               <span className="text-xs font-bold text-slate-100">{prov.name}</span>
               <span className="text-[10px] text-slate-500 truncate mt-0.5">{prov.endpoint}</span>
+              {primaryProvider === prov.id && (
+                <span className="text-[9px] font-bold text-emerald-400 mt-1 uppercase tracking-wider">
+                  ★ Active Provider
+                </span>
+              )}
             </button>
           );
         })}

@@ -9,6 +9,7 @@ import WorldStateModal from './WorldStateModal';
 import LanguageModal from './LanguageModal';
 import ContextSettingsModal from './ContextSettingsModal';
 import { getModelSpec } from '../services/tokenEstimator';
+import { getProviderKeys, getActiveKeyCount } from '../services/keyAvailability';
 
 export default function ChatCanvas({
   sessions = [],
@@ -51,6 +52,11 @@ export default function ChatCanvas({
   isZenMode = false,
   onAbort,
   keyStats = [],
+  activeProvider = 'auto',
+  requiredProvider = 'gemini',
+  onActiveProviderChange,
+  singleKeyMode = false,
+  onSingleKeyModeChange,
   currentUser = null,
   language = 'vi',
   onLanguageChange,
@@ -91,7 +97,10 @@ export default function ChatCanvas({
     setLoreDrawerOpen(!loreDrawerOpen);
   };
 
-  const activeKeysCount = keyStats.filter(k => k.status === 'active').length;
+  // Key telemetry is scoped to the active/required provider so a Gemini-only
+  // warning can never appear while the user is running a Groq model.
+  const totalKeysCount = getProviderKeys(keyStats, requiredProvider).length;
+  const activeKeysCount = getActiveKeyCount(keyStats, requiredProvider);
   const spec = getModelSpec(model);
   const contextLimit = spec?.contextLimit || 1048576;
 
@@ -156,7 +165,7 @@ export default function ChatCanvas({
         onOpenLanguage={() => setIsLanguageModalOpen(true)}
         retrievedCount={retrievedLore.length}
         activeKeysCount={activeKeysCount}
-        totalKeysCount={keyStats.length || 0}
+        totalKeysCount={totalKeysCount}
         sessionsCount={sessions.length}
         language={language}
         isSummaryReq={isSummaryReq}
@@ -194,6 +203,11 @@ export default function ChatCanvas({
       <KeyPoolModal
         isOpen={isKeyPoolModalOpen}
         onClose={() => setIsKeyPoolModalOpen(false)}
+        activeProvider={activeProvider}
+        requiredProvider={requiredProvider}
+        onActiveProviderChange={onActiveProviderChange}
+        singleKeyMode={singleKeyMode}
+        onSingleKeyModeChange={onSingleKeyModeChange}
       />
 
       {/* 4. World / Global State Modal */}

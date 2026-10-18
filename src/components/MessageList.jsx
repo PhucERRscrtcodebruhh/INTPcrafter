@@ -140,9 +140,9 @@ const MessageItem = memo(function MessageItem({
   // USER MESSAGE (Aligned right + Round avatar on the right)
   if (isUser) {
     return (
-      <div className="flex justify-end items-start gap-3 w-full my-3 group">
+      <div className="flex justify-end items-start gap-2 md:gap-3 w-full my-3 group">
         {/* User Message Bubble */}
-        <div className="max-w-2xl sm:max-w-3xl rounded-2xl rounded-tr-sm p-3.5 sm:p-4 text-xs sm:text-[13px] leading-relaxed bg-cyber-900/90 border border-emerald-500/35 text-slate-100 shadow-glow-emerald-sm backdrop-blur-md relative transition-all hover:border-emerald-500/50">
+        <div className="w-full min-w-0 max-w-[calc(100%-2.75rem)] sm:max-w-2xl md:max-w-3xl rounded-2xl rounded-tr-sm p-3 sm:p-4 text-xs sm:text-[13px] leading-relaxed bg-cyber-900/90 border border-emerald-500/35 text-slate-100 shadow-glow-emerald-sm backdrop-blur-md relative transition-all hover:border-emerald-500/50">
           {/* Header Line */}
           <div className="flex items-center justify-between gap-3 text-[11px] mb-1.5 pb-1 border-b border-emerald-500/20">
             <span className="text-emerald-400 font-bold uppercase tracking-wider text-[10px]">
@@ -261,7 +261,7 @@ const MessageItem = memo(function MessageItem({
 
   // AI RESPONSE (Round "AI" avatar on the left + Large Story container block)
   return (
-    <div className="flex justify-start items-start gap-3 w-full my-3.5 group">
+    <div className="flex justify-start items-start gap-2 md:gap-3 w-full my-3.5 group">
       {/* Circular "AI" Avatar on the Left */}
       <div
         className="w-9 h-9 sm:w-10 sm:h-10 rounded-full shrink-0 border-2 border-cyan-400/90 bg-cyan-950/90 flex items-center justify-center text-cyan-300 font-mono font-bold text-xs shadow-glow-cyan-sm select-none relative"
@@ -272,7 +272,7 @@ const MessageItem = memo(function MessageItem({
       </div>
 
       {/* Large Story Container Block */}
-      <div className="flex-1 max-w-4xl rounded-2xl rounded-tl-sm p-4 sm:p-5 text-xs sm:text-[13px] leading-relaxed bg-cyber-900/80 border border-cyan-500/25 text-slate-200 shadow-glow-cyan-sm backdrop-blur-md relative group transition-all hover:border-cyan-500/40">
+      <div className="flex-1 min-w-0 max-w-full md:max-w-4xl rounded-2xl rounded-tl-sm p-3 sm:p-4 md:p-5 text-xs sm:text-[13px] leading-relaxed bg-cyber-900/80 border border-cyan-500/25 text-slate-200 shadow-glow-cyan-sm backdrop-blur-md relative group transition-all hover:border-cyan-500/40">
         {/* Story Block Top Header */}
         <div className="flex flex-wrap items-center justify-between gap-2 text-[11px] mb-2.5 pb-1.5 border-b border-cyan-500/15">
           <div className="flex items-center space-x-2">
@@ -424,7 +424,7 @@ function StreamingBubble({ streamingText, streamingLore }) {
   const activeStreamParsed = extractThinkingAndStory(streamingText, true);
 
   return (
-    <div className="flex justify-start items-start gap-3 w-full my-3.5 group animate-fadeIn">
+    <div className="flex justify-start items-start gap-2 md:gap-3 w-full my-3.5 group animate-fadeIn">
       {/* Circular "AI" avatar on the left with pulse effect */}
       <div
         className="w-9 h-9 sm:w-10 sm:h-10 rounded-full shrink-0 border-2 border-cyan-400 bg-cyan-950 flex items-center justify-center text-cyan-300 font-mono font-bold text-xs shadow-glow-cyan-sm relative"
@@ -434,8 +434,8 @@ function StreamingBubble({ streamingText, streamingLore }) {
       </div>
 
       {/* Large Story Container Block */}
-      <div className="flex-1 max-w-4xl rounded-2xl rounded-tl-sm p-4 sm:p-5 text-xs sm:text-[13px] leading-relaxed bg-cyber-900/85 border border-cyan-500/40 text-slate-200 shadow-glow-cyan-sm backdrop-blur-md relative">
-        <div className="flex items-center space-x-2 text-[11px] mb-2 pb-1.5 border-b border-cyan-500/15">
+      <div className="flex-1 min-w-0 max-w-full md:max-w-4xl rounded-2xl rounded-tl-sm p-3 sm:p-4 md:p-5 text-xs sm:text-[13px] leading-relaxed bg-cyber-900/85 border border-cyan-500/40 text-slate-200 shadow-glow-cyan-sm backdrop-blur-md relative">
+        <div className="flex flex-wrap items-center gap-1.5 md:gap-2 text-[11px] mb-2 pb-1.5 border-b border-cyan-500/15">
           <span className="text-cyan-300 font-bold uppercase tracking-wider flex items-center space-x-1.5">
             <Cpu size={12} className="animate-spin text-cyan-400" />
             <span>INTP World Simulator</span>
@@ -564,7 +564,7 @@ export default function MessageList({
 
   if (messages.length === 0 && !isLoading && !isStreaming) {
     return (
-      <div className="flex-1 flex flex-col items-center justify-center p-6 text-center select-none">
+      <div className="flex-1 flex flex-col items-center justify-center p-4 md:p-6 text-center select-none">
         <div className="w-14 h-14 rounded-full bg-cyan-950/60 border border-cyan-500/30 flex items-center justify-center text-cyan-400 mb-4 shadow-glow-cyan-sm">
           <Sparkles size={26} />
         </div>
@@ -579,7 +579,7 @@ export default function MessageList({
   }
 
   return (
-    <div className="flex-1 overflow-y-auto px-3 sm:px-6 py-4 space-y-4 scrollbar-thin scrollbar-thumb-cyan-500/20">
+    <div className="flex-1 overflow-y-auto px-2.5 sm:px-4 md:px-12 py-3 md:py-4 space-y-3 md:space-y-4 scrollbar-thin scrollbar-thumb-cyan-500/20">
       {/* Performance Pruning Banner */}
       {isPruned && (
         <div className="p-2.5 rounded-lg bg-cyber-950 border border-cyan-500/20 text-xs flex flex-wrap items-center justify-between gap-2 text-slate-400 animate-fadeIn select-none">

@@ -71,6 +71,8 @@ const MODEL_ACCENTS = {
   },
 };
 
+const DOCK_BUTTON_CLASS = 'shrink-0 w-10 h-10 md:w-15 md:h-15 p-1 md:p-2 rounded-lg md:rounded-xl bg-cyber-900/90 border border-slate-800 hover:border-cyan-400/70 hover:bg-cyan-950/30 text-slate-400 hover:text-cyan-300 flex flex-col items-center justify-center transition-all group shadow-md relative';
+
 export default function BottomHUD({
   // Chat Input state & handlers
   prompt,
@@ -133,6 +135,15 @@ export default function BottomHUD({
   const spec = getModelSpec(model);
   const limit = spec?.contextLimit || 1048576;
 
+  // Mobile compact context telemetry (the desktop ring is hidden below md).
+  const contextPercent = limit > 0 ? (currentTokens / limit) * 100 : 0;
+  const contextPercentLabel = contextPercent > 0 && contextPercent < 0.1
+    ? '<0.1%'
+    : `${contextPercent >= 10 ? Math.round(contextPercent) : contextPercent.toFixed(1)}%`;
+  const contextBarWidth = Math.min(100, Math.max(1, contextPercent));
+  const isContextHot = contextPercent >= 85;
+  const isContextWarm = currentTokens >= rollingThreshold;
+
   // Auto-resize textarea
   useEffect(() => {
     if (textareaRef.current) {
@@ -173,9 +184,9 @@ export default function BottomHUD({
   return (
     <div className="relative border-t border-cyan-500/20 bg-cyber-900/95 backdrop-blur-lg select-none z-30 font-mono">
       {/* TOP SECTION: Donut Gauge + Chat Input Cluster */}
-      <div className="px-3 sm:px-6 pt-3 pb-2 flex items-end gap-3 sm:gap-4 max-w-6xl mx-auto w-full">
-        {/* Left Side: Circular Progress Ring / Donut Gauge for Context Window */}
-        <div className="shrink-0 mb-1">
+      <div className="px-2.5 sm:px-6 pt-3 pb-2 flex items-end gap-2.5 sm:gap-4 max-w-6xl mx-auto w-full">
+        {/* Left Side: Circular Progress Ring — desktop cockpit only */}
+        <div className="hidden md:flex shrink-0 mb-1">
           <DonutContextGauge
             currentTokens={currentTokens}
             limit={limit}
@@ -188,24 +199,24 @@ export default function BottomHUD({
         {/* Center: Chat Input Box with 3 Attached Top Tabs */}
         <div className="flex-1 min-w-0 flex flex-col">
           {/* The 3 Attached Small Tabs on Top Border */}
-          <div className="flex items-center space-x-1 pl-1 z-10 -mb-[1px]">
+          <div className="relative flex items-center gap-1 pl-0.5 md:pl-1 z-10 -mb-[1px] w-full min-w-0">
             {/* Tab 1: [Model: ...] */}
-            <div className="relative" ref={modelPickerRef}>
+            <div className="relative min-w-0 flex-1 sm:flex-none" ref={modelPickerRef}>
               <button
                 type="button"
                 onClick={() => setShowModelPicker(!showModelPicker)}
-                className={`flex items-center space-x-1 px-2.5 py-1 text-[11px] rounded-t-md border-t border-l border-r transition-all ${
+                className={`w-full min-w-0 flex items-center gap-1 px-2 md:px-2.5 py-1 text-[10px] md:text-[11px] rounded-t-md border-t border-l border-r transition-all ${
                   showModelPicker
                     ? 'bg-cyber-950 border-cyan-400 text-cyan-200 shadow-glow-cyan-sm font-semibold'
                     : 'bg-cyber-900/90 border-cyan-500/30 text-cyan-300 hover:border-cyan-400/60 hover:text-cyan-200'
                 }`}
                 title="Chọn mô hình AI (Model)"
               >
-                <Cpu size={12} className="text-cyan-400" />
-                <span className="max-w-[130px] sm:max-w-[180px] truncate">
-                  Model: {shortModelName}
+                <Cpu size={12} className="text-cyan-400 shrink-0" />
+                <span className="min-w-0 truncate max-w-[30vw] sm:max-w-[180px]">
+                  <span className="hidden sm:inline">Model: </span>{shortModelName}
                 </span>
-                <ChevronDown size={10} className="text-slate-400" />
+                <ChevronDown size={10} className="text-slate-400 shrink-0" />
               </button>
 
               {/* Model Picker Dropdown (drop-up, grouped registry) */}
@@ -247,12 +258,12 @@ export default function BottomHUD({
               )}
             </div>
 
-            {/* Tab 2: [Param] — floats upward over the canvas */}
-            <div className="relative" ref={paramsPickerRef}>
+            {/* Tab 2: [Param] — panel floats above the full toolbar */}
+            <div className="shrink-0" ref={paramsPickerRef}>
               <button
                 type="button"
                 onClick={() => setShowParams(!showParams)}
-                className={`flex items-center space-x-1 px-2.5 py-1 text-[11px] rounded-t-md border-t border-l border-r transition-all ${
+                className={`shrink-0 flex items-center gap-1 px-2 md:px-2.5 py-1 text-[10px] md:text-[11px] rounded-t-md border-t border-l border-r transition-all ${
                   showParams
                     ? 'bg-cyber-950 border-cyan-400 text-cyan-200 shadow-glow-cyan-sm font-semibold'
                     : 'bg-cyber-900/90 border-cyan-500/30 text-slate-300 hover:border-cyan-400/60 hover:text-cyan-200'
@@ -265,7 +276,7 @@ export default function BottomHUD({
               </button>
 
               {showParams && (
-                <div className="absolute left-1/2 -translate-x-1/2 sm:left-0 sm:translate-x-0 bottom-full mb-2 z-50 w-[min(92vw,600px)] bg-cyber-950/95 border border-cyan-500/40 rounded-xl shadow-glow-cyan p-3 grid grid-cols-1 sm:grid-cols-3 gap-4 text-xs animate-fadeIn">
+                <div className="absolute left-0 right-0 sm:right-auto bottom-full mb-2 z-50 w-auto sm:w-[600px] bg-cyber-950/95 border border-cyan-500/40 rounded-xl shadow-glow-cyan p-3 grid grid-cols-1 sm:grid-cols-3 gap-3 sm:gap-4 text-xs animate-fadeIn">
                   {/* Temperature */}
                   <div className="space-y-1">
                     <div className="flex justify-between text-slate-400">
@@ -332,27 +343,27 @@ export default function BottomHUD({
               )}
             </div>
             {/* Tab 3: [World linked: ...] */}
-            <div className="relative" ref={worldPickerRef}>
+            <div className="relative min-w-0 flex-1 sm:flex-none" ref={worldPickerRef}>
               <button
                 type="button"
                 onClick={() => setShowWorldPicker(!showWorldPicker)}
-                className={`flex items-center space-x-1 px-2.5 py-1 text-[11px] rounded-t-md border-t border-l border-r transition-all ${
+                className={`w-full min-w-0 flex items-center gap-1 px-2 md:px-2.5 py-1 text-[10px] md:text-[11px] rounded-t-md border-t border-l border-r transition-all ${
                   showWorldPicker
                     ? 'bg-cyber-950 border-cyan-400 text-cyan-200 shadow-glow-cyan-sm font-semibold'
                     : 'bg-cyber-900/90 border-cyan-500/30 text-slate-300 hover:border-cyan-400/60 hover:text-cyan-200'
                 }`}
                 title="Thế giới đang liên kết (World)"
               >
-                <Globe size={12} className={linkedBook ? 'text-emerald-400' : 'text-slate-500'} />
-                <span className="max-w-[120px] sm:max-w-[180px] truncate">
-                  World linked: {linkedBook ? linkedBook.title : 'None'}
+                <Globe size={12} className={`${linkedBook ? 'text-emerald-400' : 'text-slate-500'} shrink-0`} />
+                <span className="min-w-0 truncate max-w-[28vw] sm:max-w-[180px]">
+                  <span className="hidden sm:inline">World linked: </span>{linkedBook ? linkedBook.title : 'World'}
                 </span>
-                <ChevronDown size={10} className="text-slate-400" />
+                <ChevronDown size={10} className="text-slate-400 shrink-0" />
               </button>
 
               {/* World Picker Dropdown */}
               {showWorldPicker && (
-                <div className="absolute left-0 bottom-full mb-2 w-64 bg-cyber-950 border border-cyan-500/40 rounded-lg shadow-glow-cyan p-2 z-50 max-h-72 overflow-y-auto space-y-1 animate-fadeIn text-xs">
+                <div className="absolute right-0 sm:right-auto sm:left-0 bottom-full mb-2 w-[min(76vw,16rem)] sm:w-64 bg-cyber-950 border border-cyan-500/40 rounded-lg shadow-glow-cyan p-2 z-50 max-h-72 overflow-y-auto space-y-1 animate-fadeIn text-xs">
                   <div className="text-[10px] uppercase font-bold text-slate-400 px-1 border-b border-slate-800 pb-1 flex justify-between">
                     <span>Liên kết World</span>
                     <span className="text-cyan-400">{books.length} Worlds</span>
@@ -383,11 +394,35 @@ export default function BottomHUD({
                 </div>
               )}
             </div>
+
+            {/* Mobile-only inline context badge (desktop uses the donut gauge) */}
+            <span
+              className={`md:hidden shrink-0 ml-auto px-1.5 py-0.5 rounded border text-[9px] font-mono tabular-nums ${
+                isContextHot
+                  ? 'border-rose-500/50 bg-rose-950/60 text-rose-300'
+                  : isContextWarm
+                    ? 'border-amber-500/50 bg-amber-950/50 text-amber-300'
+                    : 'border-cyan-500/30 bg-cyan-950/40 text-cyan-300'
+              }`}
+              title="Context window usage"
+            >
+              {contextPercentLabel} ctx
+            </span>
+          </div>
+
+          {/* Mobile-only 2px context progress bar, directly above the input */}
+          <div className="md:hidden h-[2px] w-full bg-cyber-800 rounded-full overflow-hidden mb-1.5">
+            <div
+              className={`h-full rounded-full transition-all duration-500 ${
+                isContextHot ? 'bg-rose-400' : isContextWarm ? 'bg-amber-400' : 'bg-gradient-to-r from-cyan-400 to-emerald-400'
+              }`}
+              style={{ width: `${contextBarWidth}%` }}
+            />
           </div>
 
           {/* Chat Textarea Box */}
-          <div className="relative flex flex-col bg-cyber-950/95 border border-cyan-500/30 rounded-b-xl rounded-tr-xl p-2.5 focus-within:border-cyan-400 focus-within:shadow-glow-cyan-sm transition-all shadow-inner">
-            <div className="flex items-end gap-2">
+          <div className="relative flex flex-col bg-cyber-950/95 border border-cyan-500/30 rounded-b-xl rounded-tr-xl p-2 md:p-2.5 focus-within:border-cyan-400 focus-within:shadow-glow-cyan-sm transition-all shadow-inner">
+            <div className="flex items-end gap-1.5 md:gap-2">
               <textarea
                 ref={textareaRef}
                 rows={1}
@@ -396,7 +431,7 @@ export default function BottomHUD({
                 onKeyDown={handleKeyDown}
                 disabled={isBusy}
                 placeholder={isBusy ? "Đang xử lý luồng tạo thế giới..." : "Chat here..."}
-                className="w-full bg-transparent px-1.5 py-1 text-xs text-slate-100 placeholder-slate-500 resize-none focus:outline-none leading-relaxed max-h-40 font-mono"
+                className="w-full min-w-0 bg-transparent px-1.5 py-1 text-[16px] md:text-xs text-slate-100 placeholder-slate-500 resize-none focus:outline-none leading-relaxed max-h-40 font-mono"
               />
 
               {/* [Send] / [Stop] Button */}
@@ -405,8 +440,9 @@ export default function BottomHUD({
                   <button
                     onClick={onAbort}
                     type="button"
-                    className="flex items-center space-x-1.5 px-3 py-1.5 rounded-lg text-xs font-bold bg-rose-950/90 hover:bg-rose-900 text-rose-300 border border-rose-500/50 shadow-glow-rose-sm cursor-pointer transition-all animate-fadeIn"
+                    className="flex items-center gap-1 px-2.5 md:px-3 py-2 md:py-1.5 rounded-lg text-[11px] md:text-xs font-bold bg-rose-950/90 hover:bg-rose-900 text-rose-300 border border-rose-500/50 shadow-glow-rose-sm cursor-pointer transition-all animate-fadeIn"
                     title="Dừng luồng tạo"
+                    aria-label="Stop generation"
                   >
                     <Square size={12} className="fill-current text-rose-400" />
                     <span>Stop</span>
@@ -415,11 +451,12 @@ export default function BottomHUD({
                   <button
                     onClick={onSend}
                     disabled={!prompt.trim()}
-                    className={`flex items-center space-x-1 px-4 py-1.5 rounded-lg text-xs font-bold transition-all ${
+                    className={`flex items-center gap-1 px-3 md:px-4 py-2 md:py-1.5 rounded-lg text-[11px] md:text-xs font-bold transition-all ${
                       !prompt.trim()
                         ? 'bg-slate-800 text-slate-500 cursor-not-allowed border border-slate-700/50'
                         : 'bg-emerald-400 hover:bg-emerald-300 text-black shadow-glow-emerald cursor-pointer'
                     }`}
+                    aria-label="Send message"
                   >
                     <span>Send</span>
                     <CornerDownLeft size={13} />
@@ -457,15 +494,15 @@ export default function BottomHUD({
       </div>
 
       {/* BOTTOM SECTION: Thanh Dock gồm 6 nút vuông lớn xếp ngang có icon */}
-      <div className="border-t border-cyan-500/15 bg-cyber-950/80 pl-2 pr-12 sm:px-2 py-2 flex items-center justify-center gap-2 sm:gap-4 select-none">
+      <div className="border-t border-cyan-500/15 bg-cyber-950/80 pl-2 pr-12 md:px-2 py-1.5 md:py-2 flex items-center justify-start md:justify-center gap-1.5 md:gap-4 select-none overflow-x-auto no-scrollbar">
         {/* 1. Chat Session */}
         <button
           onClick={onOpenSessionDrawer}
-          className="w-13 h-13 sm:w-15 sm:h-15 p-2 rounded-xl bg-cyber-900/90 border border-slate-800 hover:border-cyan-400/70 hover:bg-cyan-950/30 text-slate-400 hover:text-cyan-300 flex flex-col items-center justify-center transition-all group shadow-md relative"
+          className={DOCK_BUTTON_CLASS}
           title="Mở danh sách phiên chat (Chronicles)"
         >
           <MessageSquare size={18} className="group-hover:scale-110 transition-transform text-cyan-400" />
-          <span className="text-[9px] font-mono mt-1 text-slate-300 group-hover:text-cyan-200 tracking-tight">
+          <span className="text-[8px] md:text-[9px] font-mono mt-0.5 md:mt-1 text-slate-300 group-hover:text-cyan-200 tracking-tight">
             Session
           </span>
           {sessionsCount > 0 && (
@@ -478,11 +515,11 @@ export default function BottomHUD({
         {/* 2. Lorebook */}
         <button
           onClick={onOpenLorebook}
-          className="w-13 h-13 sm:w-15 sm:h-15 p-2 rounded-xl bg-cyber-900/90 border border-slate-800 hover:border-cyan-400/70 hover:bg-cyan-950/30 text-slate-400 hover:text-cyan-300 flex flex-col items-center justify-center transition-all group shadow-md"
+          className={DOCK_BUTTON_CLASS}
           title="Mở Lorebook Database & Multiverse"
         >
           <Database size={18} className="group-hover:scale-110 transition-transform text-cyan-400" />
-          <span className="text-[9px] font-mono mt-1 text-slate-300 group-hover:text-cyan-200 tracking-tight">
+          <span className="text-[8px] md:text-[9px] font-mono mt-0.5 md:mt-1 text-slate-300 group-hover:text-cyan-200 tracking-tight">
             Lorebook
           </span>
         </button>
@@ -490,11 +527,11 @@ export default function BottomHUD({
         {/* 3. Pool API Key */}
         <button
           onClick={onOpenKeyPool}
-          className="w-13 h-13 sm:w-15 sm:h-15 p-2 rounded-xl bg-cyber-900/90 border border-slate-800 hover:border-cyan-400/70 hover:bg-cyan-950/30 text-slate-400 hover:text-cyan-300 flex flex-col items-center justify-center transition-all group shadow-md relative"
+          className={DOCK_BUTTON_CLASS}
           title="Quản lý Gemini & DeepSeek API Key Vault (BYOK)"
         >
           <KeyRound size={18} className="group-hover:scale-110 transition-transform text-cyan-400" />
-          <span className="text-[9px] font-mono mt-1 text-slate-300 group-hover:text-cyan-200 tracking-tight">
+          <span className="text-[8px] md:text-[9px] font-mono mt-0.5 md:mt-1 text-slate-300 group-hover:text-cyan-200 tracking-tight">
             Pool Key
           </span>
           <span className="absolute -top-1 -right-1 px-1.5 py-0.2 rounded-full text-[9px] bg-cyber-950 border border-slate-700 text-slate-300 font-mono font-semibold">
@@ -505,11 +542,11 @@ export default function BottomHUD({
         {/* 4. World / Global State */}
         <button
           onClick={onOpenWorldState}
-          className="w-13 h-13 sm:w-15 sm:h-15 p-2 rounded-xl bg-cyber-900/90 border border-slate-800 hover:border-cyan-400/70 hover:bg-cyan-950/30 text-slate-400 hover:text-cyan-300 flex flex-col items-center justify-center transition-all group shadow-md relative"
+          className={DOCK_BUTTON_CLASS}
           title="Cài đặt World & Global State Matrix"
         >
           <Globe size={18} className="group-hover:scale-110 transition-transform text-emerald-400" />
-          <span className="text-[9px] font-mono mt-1 text-slate-300 group-hover:text-emerald-200 tracking-tight">
+          <span className="text-[8px] md:text-[9px] font-mono mt-0.5 md:mt-1 text-slate-300 group-hover:text-emerald-200 tracking-tight">
             World
           </span>
           {linkedBook && (
@@ -520,11 +557,11 @@ export default function BottomHUD({
         {/* 5. Lore Context */}
         <button
           onClick={onToggleLoreContext}
-          className="w-13 h-13 sm:w-15 sm:h-15 p-2 rounded-xl bg-cyber-900/90 border border-slate-800 hover:border-cyan-400/70 hover:bg-cyan-950/30 text-slate-400 hover:text-cyan-300 flex flex-col items-center justify-center transition-all group shadow-md relative"
+          className={DOCK_BUTTON_CLASS}
           title="Xem Lore Context đã tiêm vào lượt chat hiện tại"
         >
           <Cpu size={18} className="group-hover:scale-110 transition-transform text-purple-400" />
-          <span className="text-[9px] font-mono mt-1 text-slate-300 group-hover:text-purple-200 tracking-tight">
+          <span className="text-[8px] md:text-[9px] font-mono mt-0.5 md:mt-1 text-slate-300 group-hover:text-purple-200 tracking-tight">
             Lore Ctx
           </span>
           {retrievedCount > 0 && (
@@ -537,14 +574,14 @@ export default function BottomHUD({
         {/* 6. Language / Translate (A/文) */}
         <button
           onClick={onOpenLanguage}
-          className="w-13 h-13 sm:w-15 sm:h-15 p-2 rounded-xl bg-cyber-900/90 border border-slate-800 hover:border-cyan-400/70 hover:bg-cyan-950/30 text-slate-400 hover:text-cyan-300 flex flex-col items-center justify-center transition-all group shadow-md"
+          className={DOCK_BUTTON_CLASS}
           title="Đổi ngôn ngữ / Translate (A/文)"
         >
           <div className="flex items-center space-x-0.5 text-slate-300 group-hover:text-cyan-300">
             <span className="font-bold text-xs">A</span>
             <span className="text-[10px] opacity-70">/文</span>
           </div>
-          <span className="text-[9px] font-mono mt-1 text-slate-300 group-hover:text-cyan-200 uppercase tracking-tight">
+          <span className="text-[8px] md:text-[9px] font-mono mt-0.5 md:mt-1 text-slate-300 group-hover:text-cyan-200 uppercase tracking-tight">
             {language}
           </span>
         </button>
