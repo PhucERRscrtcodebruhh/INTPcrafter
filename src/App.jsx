@@ -11,6 +11,8 @@ import {
   getActiveKeyCount,
   hasActiveKey,
 } from './services/keyAvailability';
+import { useSettingsStore } from './store/useSettingsStore';
+
 
 // Default first-session guide message (inserted as model response on first session)
 const FIRST_SESSION_GUIDE = `# 🌌 Chào mừng đến với StoryContainer Engine!
@@ -56,9 +58,13 @@ export default function App() {
   
   // Model and parameters
   const [model, setModel] = useState('gemini-3.8-flash');
-  const [temperature, setTemperature] = useState(0.7);
-  const [topP, setTopP] = useState(0.95);
-  const [maxOutputTokens, setMaxOutputTokens] = useState(4096);
+  const { parameters, updateParameter } = useSettingsStore();
+  const temperature = parameters.temperature;
+  const setTemperature = (val) => updateParameter('temperature', val);
+  const topP = parameters.topP;
+  const setTopP = (val) => updateParameter('topP', val);
+  const maxOutputTokens = parameters.maxOutputTokens;
+  const setMaxOutputTokens = (val) => updateParameter('maxOutputTokens', val);
 
   // Context & Token Tracking (Bound per chat session)
   const [currentTokens, setCurrentTokens] = useState(0);
@@ -537,17 +543,42 @@ export default function App() {
       ? `${cleanPrompt}\n\n[INTP DIRECTIVE // SUMMARY REQ: Vui lòng cung cấp thêm một đoạn tóm tắt ngắn (Summary) về các chuyển biến cốt truyện chính của cảnh này ở cuối phản hồi.]`
       : cleanPrompt;
 
+    const currentParams = useSettingsStore.getState().parameters;
+    const chatPayload = {
+      sessionId: activeSessionId,
+      prompt: promptToSend,
+      model,
+      temperature: currentParams.temperature ?? temperature,
+      topP: currentParams.topP ?? topP,
+      maxOutputTokens: currentParams.maxOutputTokens ?? maxOutputTokens,
+      contextRollingThreshold: currentParams.maxContextTokens || rollingThreshold,
+      singleKeyMode,
+      modelParameters: currentParams,
+    };
+
     try {
-      await api.sendChatStream({
-        sessionId: activeSessionId,
-        prompt: promptToSend,
-        model,
-        temperature,
-        topP,
-        maxOutputTokens,
-        contextRollingThreshold: rollingThreshold,
-        singleKeyMode,
-      }, {
+      if (currentParams.disableStreaming) {
+        const doneData = await api.sendChat(chatPayload);
+        setIsStreaming(false);
+        setIsLoading(false);
+        setStreamingText('');
+        await loadMessages(activeSessionId);
+
+        if (doneData.tokenStats) {
+          setCurrentTokens(doneData.tokenStats.totalContextTokens);
+          setIsRolled(doneData.tokenStats.isRolled);
+          setHistoryStats(doneData.tokenStats.historyStats);
+        }
+
+        if (doneData.retrievedLore) {
+          setRetrievedLore(doneData.retrievedLore);
+        }
+
+        loadKeyPoolTelemetry();
+        return;
+      }
+
+      await api.sendChatStream(chatPayload, {
         signal: abortControllerRef.current.signal,
         onRag: (ragData) => {
           if (ragData?.retrievedLore?.length > 0) {

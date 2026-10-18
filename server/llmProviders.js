@@ -7,6 +7,7 @@ import {
   getPoolForUser, 
   GeminiKeyPool 
 } from './geminiPool.js';
+import { buildOpenAICompatiblePayload, resolveModelCapabilities } from './services/aiDispatcher.js';
 
 export const PROVIDER_ENDPOINTS = {
   gemini: 'https://generativelanguage.googleapis.com',
@@ -93,6 +94,8 @@ export async function callOpenAICompatibleStream({
   temperature = 0.7,
   topP = 0.95,
   maxTokens = 4096,
+  generationConfig = {},
+  provider = 'deepseek',
   onChunk,
   extraHeaders = {},
   streamTimeout = 60000,
@@ -123,12 +126,19 @@ export async function callOpenAICompatibleStream({
     formattedMessages.push({ role, content });
   });
 
+  const capabilities = resolveModelCapabilities(provider, model);
+  const mergedParams = {
+    temperature: typeof temperature === 'number' ? temperature : 0.7,
+    topP: typeof topP === 'number' ? topP : 0.95,
+    maxOutputTokens: typeof maxTokens === 'number' ? maxTokens : 4096,
+    disableStreaming: false,
+    ...generationConfig,
+  };
+  const sanitized = buildOpenAICompatiblePayload(mergedParams, capabilities, formattedMessages);
+
   const payload = {
     model,
-    messages: formattedMessages,
-    temperature: typeof temperature === 'number' ? temperature : 0.7,
-    top_p: typeof topP === 'number' ? topP : 0.95,
-    max_tokens: typeof maxTokens === 'number' ? maxTokens : 4096,
+    ...sanitized,
     stream: true
   };
 
@@ -343,6 +353,8 @@ export async function callOpenAICompatibleApi({
   temperature = 0.7,
   topP = 0.95,
   maxTokens = 4096,
+  generationConfig = {},
+  provider = 'deepseek',
   extraHeaders = {}
 }) {
   const url = `${baseUrl.replace(/\/+$/, '')}/chat/completions`;
@@ -369,12 +381,19 @@ export async function callOpenAICompatibleApi({
     formattedMessages.push({ role, content });
   });
 
+  const capabilities = resolveModelCapabilities(provider, model);
+  const mergedParams = {
+    temperature: typeof temperature === 'number' ? temperature : 0.7,
+    topP: typeof topP === 'number' ? topP : 0.95,
+    maxOutputTokens: typeof maxTokens === 'number' ? maxTokens : 4096,
+    disableStreaming: true,
+    ...generationConfig,
+  };
+  const sanitized = buildOpenAICompatiblePayload(mergedParams, capabilities, formattedMessages);
+
   const payload = {
     model,
-    messages: formattedMessages,
-    temperature: typeof temperature === 'number' ? temperature : 0.7,
-    top_p: typeof topP === 'number' ? topP : 0.95,
-    max_tokens: typeof maxTokens === 'number' ? maxTokens : 4096,
+    ...sanitized,
     stream: false
   };
 
@@ -643,6 +662,8 @@ export class ProviderKeyPool {
           temperature: generationConfig?.temperature ?? 0.7,
           topP: generationConfig?.topP ?? 0.95,
           maxTokens: generationConfig?.maxOutputTokens ?? 4096,
+          generationConfig,
+          provider: this.provider,
           onChunk: wrappedOnChunk,
           streamTimeout,
           ttftTimeout

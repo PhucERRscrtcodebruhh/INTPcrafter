@@ -419,18 +419,48 @@ export function buildStableRequestEnvelope({
   };
 }
 
+function extractModelParameters(body = {}) {
+  const mp = body.modelParameters || {};
+  return {
+    temperature: mp.temperature !== undefined ? parseFloat(mp.temperature) : (body.temperature !== undefined ? parseFloat(body.temperature) : 0.7),
+    topP: mp.topP !== undefined ? parseFloat(mp.topP) : (body.topP !== undefined ? parseFloat(body.topP) : 0.95),
+    maxOutputTokens: mp.maxOutputTokens !== undefined ? parseInt(mp.maxOutputTokens, 10) : (body.maxOutputTokens !== undefined ? parseInt(body.maxOutputTokens, 10) : 4096),
+    maxContextTokens: mp.maxContextTokens !== undefined ? parseInt(mp.maxContextTokens, 10) : undefined,
+    disableStreaming: Boolean(mp.disableStreaming ?? body.disableStreaming ?? false),
+
+    // OpenAI / DeepSeek Specific
+    frequencyPenalty: mp.frequencyPenalty !== undefined ? parseFloat(mp.frequencyPenalty) : (body.frequencyPenalty !== undefined ? parseFloat(body.frequencyPenalty) : 0.0),
+    presencePenalty: mp.presencePenalty !== undefined ? parseFloat(mp.presencePenalty) : (body.presencePenalty !== undefined ? parseFloat(body.presencePenalty) : 0.0),
+    stopSequences: Array.isArray(mp.stopSequences) ? mp.stopSequences : (Array.isArray(body.stopSequences) ? body.stopSequences : []),
+    reasoningEffort: mp.reasoningEffort || body.reasoningEffort || 'auto',
+    reasoningSummary: mp.reasoningSummary || body.reasoningSummary || 'unset',
+    reasoningMode: mp.reasoningMode || body.reasoningMode || 'unset',
+    verbosity: mp.verbosity || body.verbosity || 'none',
+    useResponsesApi: Boolean(mp.useResponsesApi ?? body.useResponsesApi ?? false),
+
+    // Google GenAI Specific
+    topK: mp.topK !== undefined ? parseInt(mp.topK, 10) : (body.topK !== undefined ? parseInt(body.topK, 10) : 40),
+    thinkingEnabled: mp.thinkingEnabled !== undefined ? Boolean(mp.thinkingEnabled) : (body.thinkingEnabled !== undefined ? Boolean(body.thinkingEnabled) : true),
+    thinkingBudget: mp.thinkingBudget !== undefined ? parseInt(mp.thinkingBudget, 10) : (body.thinkingBudget !== undefined ? parseInt(body.thinkingBudget, 10) : -1),
+    thinkingLevel: mp.thinkingLevel || body.thinkingLevel || 'auto',
+    groundingWithGoogleSearch: Boolean(mp.groundingWithGoogleSearch ?? body.groundingWithGoogleSearch ?? false),
+    urlContext: Boolean(mp.urlContext ?? body.urlContext ?? false),
+    resendFiles: Boolean(mp.resendFiles ?? body.resendFiles ?? true),
+    imageDetail: mp.imageDetail || body.imageDetail || 'auto',
+  };
+}
+
 app.post('/api/chat', requireAuth, async (req, res) => {
   const {
     sessionId,
     prompt,
     model = 'gemini-3.8-flash',
-    temperature = 0.7,
-    topP = 0.95,
-    maxOutputTokens = 4096,
-    contextRollingThreshold = 32768,
+    contextRollingThreshold,
     singleKeyMode = false,
-
   } = req.body;
+  const generationConfig = extractModelParameters(req.body);
+  const maxOutputTokens = generationConfig.maxOutputTokens;
+
 
   if (!sessionId || !prompt?.trim()) {
     return res.status(400).json({ error: 'sessionId and prompt are required' });
@@ -527,11 +557,7 @@ app.post('/api/chat', requireAuth, async (req, res) => {
       messages,
       contents,
       systemInstruction: fullStaticSystemInstruction,
-      generationConfig: {
-        temperature: parseFloat(temperature),
-        topP: parseFloat(topP),
-        maxOutputTokens: parseInt(maxOutputTokens, 10),
-      }
+      generationConfig
     });
 
     const replyText = result.text;
@@ -591,13 +617,11 @@ app.post('/api/chat/stream', requireAuth, async (req, res) => {
     sessionId,
     prompt,
     model = 'gemini-3.8-flash',
-    temperature = 0.7,
-    topP = 0.95,
-    maxOutputTokens = 4096,
-    contextRollingThreshold = 32768,
+    contextRollingThreshold,
     singleKeyMode = false,
-
   } = req.body;
+  const generationConfig = extractModelParameters(req.body);
+  const maxOutputTokens = generationConfig.maxOutputTokens;
 
   if (!sessionId || !prompt?.trim()) {
     return res.status(400).json({ error: 'sessionId and prompt are required' });
@@ -724,11 +748,7 @@ app.post('/api/chat/stream', requireAuth, async (req, res) => {
       messages,
       contents,
       systemInstruction: fullStaticSystemInstruction,
-      generationConfig: {
-        temperature: parseFloat(temperature),
-        topP: parseFloat(topP),
-        maxOutputTokens: parseInt(maxOutputTokens, 10),
-      },
+      generationConfig,
       onChunk: (chunkText) => {
         hasStreamStarted = true;
         accumulatedReplyText += chunkText;

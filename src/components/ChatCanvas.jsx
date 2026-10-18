@@ -8,8 +8,10 @@ import KeyPoolModal from './KeyPoolModal';
 import WorldStateModal from './WorldStateModal';
 import LanguageModal from './LanguageModal';
 import ContextSettingsModal from './ContextSettingsModal';
+import ParameterSettingsModal from './chat/ParameterSettingsModal';
 import { getModelSpec } from '../services/tokenEstimator';
 import { getProviderKeys, getActiveKeyCount } from '../services/keyAvailability';
+import { useSettingsStore } from '../store/useSettingsStore';
 
 export default function ChatCanvas({
   sessions = [],
@@ -70,6 +72,7 @@ export default function ChatCanvas({
   const [isLanguageModalOpen, setIsLanguageModalOpen] = useState(false);
   const [isContextSettingsModalOpen, setIsContextSettingsModalOpen] = useState(false);
   const [isBottomHudCollapsed, setIsBottomHudCollapsed] = useState(false);
+  const { isCockpitOpen, setCockpitOpen } = useSettingsStore();
 
   // Active lore focused inside drawer. Start empty so the drawer falls back to the
   // live retrieval set instead of freezing whatever was loaded at first render.
@@ -154,6 +157,7 @@ export default function ChatCanvas({
         rollingThreshold={rollingThreshold}
         isRolled={isRolled}
         onOpenContextSettings={() => setIsContextSettingsModalOpen(true)}
+        onOpenParameterCockpit={() => setCockpitOpen(true)}
         books={books}
         activeBookId={activeBookId}
         onLinkBook={onLinkBook}
@@ -255,6 +259,14 @@ export default function ChatCanvas({
         currentTokens={currentTokens}
         isRolled={isRolled}
         historyStats={historyStats}
+      />
+
+      {/* Parameter Cockpit Drawer */}
+      <ParameterSettingsModal
+        isOpen={isCockpitOpen}
+        onClose={() => setCockpitOpen(false)}
+        model={model}
+        provider={requiredProvider}
       />
     </div>
   );

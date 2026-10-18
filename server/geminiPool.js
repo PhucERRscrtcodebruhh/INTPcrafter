@@ -1,6 +1,7 @@
 import crypto from 'crypto';
 import { GoogleGenAI } from '@google/genai';
 import { pool } from './db.js';
+import { buildGoogleGenAIConfig, resolveModelCapabilities } from './services/aiDispatcher.js';
 
 const CRYPTO_SECRET = process.env.CRYPTO_SECRET || 'intp_5w4_neuro_matrix_vault_secret_key_9999';
 
@@ -456,11 +457,8 @@ export class GeminiKeyPool {
         }
 
         const ai = new GoogleGenAI({ apiKey: keyObj.key });
-        const config = {
-          temperature: generationConfig?.temperature ?? 0.7,
-          topP: generationConfig?.topP ?? 0.95,
-          maxOutputTokens: generationConfig?.maxOutputTokens ?? 4096,
-        };
+        const capabilities = resolveModelCapabilities('google', targetModel);
+        const config = buildGoogleGenAIConfig(generationConfig || {}, capabilities);
         if (systemInstruction) {
           config.systemInstruction = systemInstruction;
         }
@@ -626,12 +624,8 @@ export class GeminiKeyPool {
     }
 
     const ai = new GoogleGenAI({ apiKey });
-
-    const config = {
-      temperature: generationConfig?.temperature ?? 0.7,
-      topP: generationConfig?.topP ?? 0.95,
-      maxOutputTokens: generationConfig?.maxOutputTokens ?? 4096,
-    };
+    const capabilities = resolveModelCapabilities('google', targetModel);
+    const config = buildGoogleGenAIConfig(generationConfig || {}, capabilities);
 
     if (systemInstruction) {
       config.systemInstruction = systemInstruction;

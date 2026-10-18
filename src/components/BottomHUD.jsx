@@ -92,6 +92,7 @@ export default function BottomHUD({
   setTopP,
   maxOutputTokens,
   setMaxOutputTokens,
+  onOpenParameterCockpit,
 
   // Context & Token Tracking
   currentTokens = 0,
@@ -358,6 +359,24 @@ export default function BottomHUD({
                       <span>512</span>
                       <span>8,192</span>
                     </div>
+                  </div>
+
+                  {/* Cockpit Deep Tuning Action Button */}
+                  <div className="col-span-1 sm:col-span-3 pt-2 border-t border-cyan-500/20 flex flex-wrap items-center justify-between gap-2">
+                    <span className="text-[10px] text-slate-400">
+                      Reasoning Level/Budget, Penalties, Stop Tags & Tools:
+                    </span>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setShowParams(false);
+                        onOpenParameterCockpit?.();
+                      }}
+                      className="px-2.5 py-1 rounded-lg bg-cyan-950 border border-[#00f0ff]/50 text-[#00f0ff] hover:bg-cyan-900/60 font-bold text-[10px] flex items-center space-x-1.5 transition-all shadow-glow-cyan-sm active:scale-95"
+                    >
+                      <Settings2 size={12} className="text-[#00f0ff]" />
+                      <span>Open Parameter Cockpit 🎛️</span>
+                    </button>
                   </div>
                 </div>
               )}
