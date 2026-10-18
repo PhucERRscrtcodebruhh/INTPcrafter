@@ -18,6 +18,7 @@ import {
   BookMarked
 } from 'lucide-react';
 import DonutContextGauge from './DonutContextGauge';
+import ContextControllerBubble from './chat/ContextControllerBubble';
 import MobileFloatingSendBubble from './MobileFloatingSendBubble';
 import { MODEL_SPECS, MODEL_GROUPS, formatTokenCount, getModelSpec } from '../services/tokenEstimator';
 
@@ -100,6 +101,15 @@ export default function BottomHUD({
   rollingThreshold = 32768,
   isRolled = false,
   onOpenContextSettings,
+  historyStats = null,
+
+  // Context Controller Integration
+  sessionId = null,
+  bookInstruction = '',
+  retrievedLore = [],
+  messages = [],
+  onUpdateRollingThreshold,
+  onCompactSuccess,
 
   // Worlds & Books
   books = [],
@@ -210,14 +220,27 @@ export default function BottomHUD({
       {/* TOP SECTION: Donut Gauge + Chat Input Cluster */}
       <div className="px-2.5 sm:px-6 pt-3 pb-2 flex items-end gap-2.5 sm:gap-4 max-w-6xl mx-auto w-full">
         {/* Left Side: Circular Progress Ring — desktop cockpit only */}
-        <div className="hidden md:flex shrink-0 mb-1">
-          <DonutContextGauge
+        <div className="hidden md:flex flex-col items-center shrink-0 mb-1">
+          <ContextControllerBubble
             currentTokens={currentTokens}
             limit={limit}
             rollingThreshold={rollingThreshold}
             isRolled={isRolled}
-            onOpenSettings={onOpenContextSettings}
+            historyStats={historyStats}
+            activeModel={model}
+            sessionId={sessionId}
+            bookId={activeBookId}
+            bookInstruction={bookInstruction}
+            retrievedLore={retrievedLore}
+            messages={messages}
+            onUpdateRollingThreshold={onUpdateRollingThreshold}
+            onCompactSuccess={onCompactSuccess}
+            onOpenJournal={onOpenJournal}
+            size={44}
           />
+          <span className="text-[9px] text-slate-500 font-mono mt-0.5 tabular-nums">
+            {formatTokenCount(currentTokens)}
+          </span>
         </div>
 
         {/* Center: Chat Input Box with 3 Attached Top Tabs */}
@@ -437,19 +460,25 @@ export default function BottomHUD({
               )}
             </div>
 
-            {/* Mobile-only inline context badge (desktop uses the donut gauge) */}
-            <span
-              className={`md:hidden shrink-0 ml-auto px-1.5 py-0.5 rounded border text-[9px] font-mono tabular-nums ${
-                isContextHot
-                  ? 'border-rose-500/50 bg-rose-950/60 text-rose-300'
-                  : isContextWarm
-                    ? 'border-amber-500/50 bg-amber-950/50 text-amber-300'
-                    : 'border-cyan-500/30 bg-cyan-950/40 text-cyan-300'
-              }`}
-              title="Context window usage"
-            >
-              {contextPercentLabel} ctx
-            </span>
+            {/* Mobile-only interactive context controller bubble */}
+            <ContextControllerBubble
+              isMobileBadge={true}
+              currentTokens={currentTokens}
+              limit={limit}
+              rollingThreshold={rollingThreshold}
+              isRolled={isRolled}
+              historyStats={historyStats}
+              activeModel={model}
+              sessionId={sessionId}
+              bookId={activeBookId}
+              bookInstruction={bookInstruction}
+              retrievedLore={retrievedLore}
+              messages={messages}
+              onUpdateRollingThreshold={onUpdateRollingThreshold}
+              onCompactSuccess={onCompactSuccess}
+              onOpenJournal={onOpenJournal}
+              className="md:hidden ml-auto shrink-0"
+            />
           </div>
 
           {/* Mobile-only 2px context progress bar, directly above the input */}

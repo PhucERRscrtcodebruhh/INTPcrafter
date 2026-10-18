@@ -19,7 +19,8 @@ import {
   getModelContextLimit,
   estimateTokens,
   calculateContextTokens,
-  applyRollingContext
+  applyRollingContext,
+  resetRollingAnchors
 } from './tokenUtils.js';
 import { authRouter, requireAuth } from './auth.js';
 
@@ -267,6 +268,79 @@ app.put('/api/sessions/:id/journal', requireAuth, async (req, res) => {
       sessionId,
       blankRagLore: cleanLore,
       updatedBookDefault
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Quick Compact Action: Consolidate older turns into Blank RAG Lore and purge active messages
+app.post('/api/sessions/:id/compact', requireAuth, async (req, res) => {
+  try {
+    const userId = req.user.id;
+    const sessionId = req.params.id;
+    const { keepRecent = 10 } = req.body || {};
+
+    const [owned] = await pool.query(
+      `SELECT id, book_id, blank_rag_lore FROM chat_sessions WHERE id = ? AND user_id = ? LIMIT 1`,
+      [sessionId, userId]
+    );
+    if (owned.length === 0) {
+      return res.status(404).json({ error: 'Session not found for this account.' });
+    }
+
+    const [messages] = await pool.query(
+      `SELECT id, role, content, created_at FROM chat_messages WHERE session_id = ? AND user_id = ? ORDER BY id ASC`,
+      [sessionId, userId]
+    );
+
+    if (messages.length <= keepRecent) {
+      return res.json({
+        success: true,
+        compacted: false,
+        message: 'Lịch sử hội thoại chưa vượt ngưỡng cần nén (dưới 10 lượt).',
+        purgedCount: 0,
+        remainingCount: messages.length,
+        blankRagLore: owned[0].blank_rag_lore || ''
+      });
+    }
+
+    const cutoffIndex = messages.length - keepRecent;
+    const olderMessages = messages.slice(0, cutoffIndex);
+    const retainedMessages = messages.slice(cutoffIndex);
+
+    // Build structured chronicle summary
+    const userExcerpts = olderMessages.filter(m => m.role === 'user').map(m => m.content.trim()).filter(Boolean);
+    const keyActions = userExcerpts.slice(-5).map(txt => `- ${txt.length > 90 ? txt.slice(0, 90) + '...' : txt}`).join('\n');
+
+    const summaryBlock = `\n\n### ⚡ Compacted Chronicle Log (Turn 1 to #${cutoffIndex})
+- Archived ${olderMessages.length} past conversation turns into canon chronicle memory.
+- Directives & Key Narrative Turning Points:
+${keyActions || '- Archived prior story dialogue & event flow.'}\n`;
+
+    const existingJournal = owned[0].blank_rag_lore || '';
+    const updatedJournal = (existingJournal.trim() + summaryBlock).trim();
+
+    await pool.query(
+      `UPDATE chat_sessions SET blank_rag_lore = ? WHERE id = ? AND user_id = ?`,
+      [updatedJournal, sessionId, userId]
+    );
+
+    const oldestRetainedId = retainedMessages[0].id;
+    await pool.query(
+      `DELETE FROM chat_messages WHERE session_id = ? AND user_id = ? AND id < ?`,
+      [sessionId, userId, oldestRetainedId]
+    );
+
+    resetRollingAnchors(`${userId}:${sessionId}`);
+
+    res.json({
+      success: true,
+      compacted: true,
+      purgedCount: olderMessages.length,
+      remainingCount: retainedMessages.length,
+      blankRagLore: updatedJournal,
+      message: `Đã nén ${olderMessages.length} lượt chat cũ vào Chronicle Journal (Blank RAG Lore).`
     });
   } catch (err) {
     res.status(500).json({ error: err.message });

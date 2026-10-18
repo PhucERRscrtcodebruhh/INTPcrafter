@@ -22,6 +22,7 @@ export default function ChatCanvas({
   onRenameSession,
   onDeleteSession,
   messages = [],
+  onReloadMessages,
   isLoading,
   isStreaming = false,
   streamingText = '',
@@ -178,6 +179,15 @@ export default function ChatCanvas({
         currentTokens={currentTokens}
         rollingThreshold={rollingThreshold}
         isRolled={isRolled}
+        historyStats={historyStats}
+        sessionId={activeSessionId}
+        bookInstruction={books.find(b => b.id === activeBookId)?.system_instruction || ''}
+        retrievedLore={retrievedLore}
+        messages={messages}
+        onUpdateRollingThreshold={onUpdateRollingThreshold}
+        onCompactSuccess={() => {
+          onReloadMessages?.();
+        }}
         onOpenContextSettings={() => setIsContextSettingsModalOpen(true)}
         onOpenParameterCockpit={() => setCockpitOpen(true)}
         books={books}

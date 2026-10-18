@@ -921,6 +921,12 @@ export default function App() {
             onRenameSession={handleRenameSession}
             onDeleteSession={handleDeleteSession}
             messages={messages}
+            onReloadMessages={() => {
+              if (activeSessionId) {
+                loadMessages(activeSessionId);
+              }
+              loadSessions();
+            }}
             isLoading={isLoading}
             isStreaming={isStreaming}
             streamingText={streamingText}

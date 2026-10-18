@@ -261,6 +261,57 @@ Established Cast:
   }
   console.log('✓ buildStableRequestEnvelope maintains 100% backward compatibility.\n');
 
+  // ==========================================
+  // TEST 6: Session Compact History into Blank RAG Lore Logic
+  // ==========================================
+  console.log('[TEST 6] Verifying Session History Compaction & Anchor Reset...');
+
+  const mockSessionMessages = [];
+  for (let i = 1; i <= 24; i++) {
+    mockSessionMessages.push({
+      id: i,
+      role: i % 2 === 1 ? 'user' : 'model',
+      content: i % 2 === 1 ? `Directive ${i}: Infiltrate sector ${i}` : `Response ${i}: Executing plan.`
+    });
+  }
+
+  const keepRecent = 10;
+  const cutoffIndex = mockSessionMessages.length - keepRecent;
+  const olderMessages = mockSessionMessages.slice(0, cutoffIndex);
+  const retainedMessages = mockSessionMessages.slice(cutoffIndex);
+
+  if (olderMessages.length !== 14 || retainedMessages.length !== 10) {
+    throw new Error('FAILED: Compaction slice boundary calculation incorrect');
+  }
+
+  const userExcerpts = olderMessages.filter(m => m.role === 'user').map(m => m.content.trim());
+  const keyActions = userExcerpts.slice(-5).map(txt => `- ${txt}`).join('\n');
+  const summaryBlock = `\n\n### ⚡ Compacted Chronicle Log (Turn 1 to #${cutoffIndex})\n- Archived ${olderMessages.length} past conversation turns into canon chronicle memory.\n- Directives & Key Narrative Turning Points:\n${keyActions}\n`;
+
+  if (!summaryBlock.includes('Compacted Chronicle Log (Turn 1 to #14)')) {
+    throw new Error('FAILED: Compacted chronicle log missing turn index');
+  }
+  if (!summaryBlock.includes('Directive 13: Infiltrate sector 13')) {
+    throw new Error('FAILED: Compacted log missing recent user directives');
+  }
+
+  // Anchor reset after compacting ensures next roll does not crash on deleted IDs
+  const compactSessionKey = 'test:compact-session-key';
+  resetRollingAnchors(compactSessionKey);
+
+  const postCompactRolling = applyRollingContext(
+    retainedMessages,
+    arcEnvelope.systemInstruction,
+    'Turn 25: Exfiltrate immediately.',
+    32768,
+    { sessionKey: compactSessionKey }
+  );
+
+  if (postCompactRolling.anchorId !== retainedMessages[0].id) {
+    throw new Error(`FAILED: After compaction, anchor must reset to oldest retained turn (Expected ${retainedMessages[0].id}, got ${postCompactRolling.anchorId})`);
+  }
+  console.log('✓ Session compaction correctly structures chronicle summary and resets rolling anchor.\n');
+
   console.log('=== ALL 3-TIER PREFIX KV CACHE & BLANK RAG LORE TESTS PASSED SUCCESSFULLY! ===');
 }
 

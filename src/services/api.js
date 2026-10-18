@@ -294,4 +294,8 @@ export const api = {
     method: 'PUT',
     body: JSON.stringify({ blankRagLore }),
   }),
+  compactSession: (sessionId, keepRecent = 10) => request(`/sessions/${sessionId}/compact`, {
+    method: 'POST',
+    body: JSON.stringify({ keepRecent }),
+  }),
 };
