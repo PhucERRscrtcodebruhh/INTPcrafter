@@ -18,7 +18,8 @@ import {
   BookMarked
 } from 'lucide-react';
 import DonutContextGauge from './DonutContextGauge';
-import ContextControllerBubble from './chat/ContextControllerBubble';
+import MobileContextBubbleTrigger from './chat/MobileContextBubbleTrigger';
+import MobileContextDrawer from './chat/MobileContextDrawer';
 import MobileFloatingSendBubble from './MobileFloatingSendBubble';
 import { MODEL_SPECS, MODEL_GROUPS, formatTokenCount, getModelSpec } from '../services/tokenEstimator';
 
@@ -140,6 +141,7 @@ export default function BottomHUD({
   const [showParams, setShowParams] = useState(false);
   const [showModelPicker, setShowModelPicker] = useState(false);
   const [showWorldPicker, setShowWorldPicker] = useState(false);
+  const [isMobileContextOpen, setIsMobileContextOpen] = useState(false);
 
   const textareaRef = useRef(null);
   const modelPickerRef = useRef(null);
@@ -219,28 +221,15 @@ export default function BottomHUD({
     <div className="relative border-t border-cyan-500/20 bg-cyber-900/95 backdrop-blur-lg select-none z-30 font-mono">
       {/* TOP SECTION: Donut Gauge + Chat Input Cluster */}
       <div className="px-2.5 sm:px-6 pt-3 pb-2 flex items-end gap-2.5 sm:gap-4 max-w-6xl mx-auto w-full">
-        {/* Left Side: Circular Progress Ring — desktop cockpit only */}
-        <div className="hidden md:flex flex-col items-center shrink-0 mb-1">
-          <ContextControllerBubble
+        {/* Left Side: Circular Progress Ring — desktop cockpit only (Original Untouched Design) */}
+        <div className="hidden md:flex shrink-0 mb-1">
+          <DonutContextGauge
             currentTokens={currentTokens}
             limit={limit}
             rollingThreshold={rollingThreshold}
             isRolled={isRolled}
-            historyStats={historyStats}
-            activeModel={model}
-            sessionId={sessionId}
-            bookId={activeBookId}
-            bookInstruction={bookInstruction}
-            retrievedLore={retrievedLore}
-            messages={messages}
-            onUpdateRollingThreshold={onUpdateRollingThreshold}
-            onCompactSuccess={onCompactSuccess}
-            onOpenJournal={onOpenJournal}
-            size={44}
+            onOpenSettings={onOpenContextSettings}
           />
-          <span className="text-[9px] text-slate-500 font-mono mt-0.5 tabular-nums">
-            {formatTokenCount(currentTokens)}
-          </span>
         </div>
 
         {/* Center: Chat Input Box with 3 Attached Top Tabs */}
@@ -460,25 +449,15 @@ export default function BottomHUD({
               )}
             </div>
 
-            {/* Mobile-only interactive context controller bubble */}
-            <ContextControllerBubble
-              isMobileBadge={true}
-              currentTokens={currentTokens}
-              limit={limit}
-              rollingThreshold={rollingThreshold}
-              isRolled={isRolled}
-              historyStats={historyStats}
-              activeModel={model}
-              sessionId={sessionId}
-              bookId={activeBookId}
-              bookInstruction={bookInstruction}
-              retrievedLore={retrievedLore}
-              messages={messages}
-              onUpdateRollingThreshold={onUpdateRollingThreshold}
-              onCompactSuccess={onCompactSuccess}
-              onOpenJournal={onOpenJournal}
-              className="md:hidden ml-auto shrink-0"
-            />
+            {/* Mobile Only: Compact non-intrusive Context Bubble trigger (Draggable & Non-Destructive) */}
+            <div className="flex md:hidden items-center shrink-0 ml-auto">
+              <MobileContextBubbleTrigger
+                currentTokens={currentTokens}
+                limit={limit}
+                percentage={contextPercent}
+                onClick={() => setIsMobileContextOpen(true)}
+              />
+            </div>
           </div>
 
           {/* Mobile-only 2px context progress bar, directly above the input */}
@@ -675,6 +654,25 @@ export default function BottomHUD({
           </span>
         </button>
       </div>
+
+      {/* Non-Destructive Mobile Context Drawer (mounted via Portal) */}
+      <MobileContextDrawer
+        isOpen={isMobileContextOpen}
+        onClose={() => setIsMobileContextOpen(false)}
+        currentTokens={currentTokens}
+        limit={limit}
+        rollingThreshold={rollingThreshold}
+        isRolled={isRolled}
+        historyStats={historyStats}
+        activeModel={model}
+        sessionId={sessionId}
+        bookInstruction={bookInstruction}
+        retrievedLore={retrievedLore}
+        messages={messages}
+        onUpdateRollingThreshold={onUpdateRollingThreshold}
+        onCompactSuccess={onCompactSuccess}
+        onOpenJournal={onOpenJournal}
+      />
 
       {/* Draggable Floating Send Bubble (Mobile Only) */}
       <MobileFloatingSendBubble
