@@ -2,6 +2,7 @@ import React, { useState, useEffect, useCallback, useRef } from 'react';
 import ChatCanvas from './components/ChatCanvas';
 import LorebookDashboard from './components/LorebookDashboard';
 import LoginModal from './components/LoginModal';
+import DashboardLanding from './components/dashboard/DashboardLanding';
 import { api } from './services/api';
 import { estimateTokens, getModelSpec } from './services/tokenEstimator';
 import {
@@ -49,7 +50,7 @@ const ACTIVE_PROVIDER_KEY = 'storycontainer_active_provider';
 const SINGLE_KEY_MODE_KEY = 'storycontainer_single_key_mode';
 
 export default function App() {
-  const [currentView, setCurrentView] = useState('studio'); // 'studio' | 'lorebook'
+  const [currentView, setCurrentView] = useState('landing'); // 'landing' | 'studio' | 'lorebook'
   const [sessions, setSessions] = useState([]);
   const [activeSessionId, setActiveSessionId] = useState(null);
   const [messages, setMessages] = useState([]);
@@ -121,7 +122,7 @@ export default function App() {
     }
     return null;
   });
-  const [isLoginModalOpen, setIsLoginModalOpen] = useState(() => !localStorage.getItem('storycontainer_token'));
+  const [isLoginModalOpen, setIsLoginModalOpen] = useState(false);
 
   // Language state
   const [language, setLanguage] = useState(() => {
@@ -816,6 +817,14 @@ export default function App() {
     }
   };
 
+  const handleEnterStudio = () => {
+    setCurrentView('studio');
+    const token = localStorage.getItem('storycontainer_token');
+    if (!token && !currentUser) {
+      setIsLoginModalOpen(true);
+    }
+  };
+
   const userLabel = String(currentUser?.username || currentUser?.displayName || 'USR').trim() || 'USR';
   const userAvatarSrc = typeof currentUser?.avatar === 'string' && currentUser.avatar.startsWith('data:image/')
     ? currentUser.avatar
@@ -823,9 +832,19 @@ export default function App() {
 
   return (
     <div className="h-screen w-screen flex flex-col bg-cyber-950 text-slate-200 overflow-hidden select-none font-mono">
-      {/* Floating Top-Right User HUD Badge */}
-      <div className="fixed top-2.5 right-3 z-40 flex items-center">
-        {currentUser ? (
+      {/* Floating Top-Right User HUD Badge (shown when inside Studio or Lorebook) */}
+      {currentView !== 'landing' && (
+        <div className="fixed top-2.5 right-3 z-40 flex items-center gap-2">
+          {/* Dashboard Return Button */}
+          <button
+            onClick={() => setCurrentView('landing')}
+            className="flex items-center gap-1 px-3 py-1.5 rounded-full border border-cyan-400/40 bg-cyber-950/90 hover:border-cyan-300 text-cyan-200 text-[10px] font-bold uppercase tracking-wider shadow-glow-cyan-sm hover:bg-cyan-950/50 transition-all"
+            title="Return to INTPcrafter Dashboard"
+          >
+            <span className="text-cyan-400 font-bold">⚡</span>
+            <span>Dashboard</span>
+          </button>
+          {currentUser ? (
           <div className="group flex items-center gap-2 pl-1 pr-1.5 py-1 rounded-full border border-cyan-400/35 bg-cyber-950/85 backdrop-blur-md shadow-[0_0_14px_rgba(0,240,255,0.10)] hover:border-emerald-300/60 transition-all">
             {/* Avatar ring + live status dot */}
             <div className="relative shrink-0">
@@ -877,6 +896,7 @@ export default function App() {
           </button>
         )}
       </div>
+      )}
 
       {/* Floating Zen Mode Indicator when active */}
       {isZenMode && (
@@ -910,9 +930,15 @@ export default function App() {
         </div>
       )}
 
-      {/* Main Workspace (Dual View) */}
+      {/* Main Workspace (Dashboard Landing / Studio / Lorebook) */}
       <main className="flex-1 flex overflow-hidden">
-        {currentView === 'studio' ? (
+        {currentView === 'landing' ? (
+          <DashboardLanding
+            onEnterStudio={handleEnterStudio}
+            currentUser={currentUser}
+            onOpenLogin={() => setIsLoginModalOpen(true)}
+          />
+        ) : currentView === 'studio' ? (
           <ChatCanvas
             sessions={sessions}
             activeSessionId={activeSessionId}
@@ -974,6 +1000,7 @@ export default function App() {
         ) : (
           <LorebookDashboard
             onBackToStudio={() => setCurrentView('studio')}
+            onGoToDashboard={() => setCurrentView('landing')}
             books={books}
             onBooksChanged={setBooks}
             activeBookId={linkedBookId}

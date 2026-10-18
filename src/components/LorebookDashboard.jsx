@@ -36,7 +36,7 @@ const LANGUAGE_LABELS = {
   ko: '🇰🇷 한국어'
 };
 
-export default function LorebookDashboard({ onBackToStudio, books: externalBooks, onBooksChanged, activeBookId: externalActiveBookId, onSelectBook: externalOnSelectBook }) {
+export default function LorebookDashboard({ onBackToStudio, onGoToDashboard, books: externalBooks, onBooksChanged, activeBookId: externalActiveBookId, onSelectBook: externalOnSelectBook }) {
   // Top-level tab: 'worlds' | 'keys' | 'global_instruction'
   const [topTab, setTopTab] = useState('worlds');
 
@@ -166,6 +166,16 @@ export default function LorebookDashboard({ onBackToStudio, books: externalBooks
       {/* Top Navbar Switcher */}
       <div className="border-b border-cyan-500/20 bg-cyber-900/80 px-4 sm:px-6 py-2.5 flex flex-wrap items-center justify-between gap-3 select-none">
         <div className="flex items-center space-x-2">
+          {onGoToDashboard && (
+            <button
+              onClick={onGoToDashboard}
+              className="flex items-center space-x-1 px-2.5 py-1 rounded bg-cyber-950 border border-slate-800 text-slate-400 hover:text-cyan-300 hover:border-cyan-500/40 text-xs transition-colors"
+              title="Return to INTPcrafter Dashboard"
+            >
+              <Sparkles size={12} className="text-cyan-400" />
+              <span>Dashboard</span>
+            </button>
+          )}
           <button
             onClick={onBackToStudio}
             className="flex items-center space-x-1 px-2.5 py-1 rounded bg-cyber-950 border border-slate-800 text-slate-400 hover:text-cyan-300 hover:border-cyan-500/40 text-xs transition-colors"

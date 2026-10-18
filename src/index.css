@@ -145,3 +145,132 @@ body {
 .animate-cyber-pulse {
   animation: cyberPulse 2s cubic-bezier(0.4, 0, 0.6, 1) infinite;
 }
+
+/* Cyberpunk Dashboard Animations */
+@keyframes floatSlow {
+  0%, 100% {
+    transform: translateY(0px);
+  }
+  50% {
+    transform: translateY(-12px);
+  }
+}
+
+@keyframes wandFloat {
+  0%, 100% {
+    transform: translateY(0px) rotate(0deg);
+  }
+  50% {
+    transform: translateY(-8px) rotate(-1.5deg);
+  }
+}
+
+@keyframes glitchAmber {
+  0%, 100% {
+    opacity: 1;
+    filter: drop-shadow(0 0 8px rgba(245, 158, 11, 0.6));
+  }
+  48% {
+    opacity: 0.85;
+    filter: drop-shadow(0 0 12px rgba(239, 68, 68, 0.8));
+  }
+  50% {
+    opacity: 0.25;
+    transform: translateX(1px);
+  }
+  52% {
+    opacity: 0.9;
+    transform: translateX(0);
+  }
+  80% {
+    opacity: 0.75;
+  }
+}
+
+@keyframes lockFlash {
+  0% {
+    transform: scale(1.15);
+    filter: brightness(1.8) drop-shadow(0 0 25px rgba(0, 240, 255, 0.9));
+  }
+  100% {
+    transform: scale(1);
+    filter: brightness(1) drop-shadow(0 0 12px rgba(0, 240, 255, 0.6));
+  }
+}
+
+.animate-float-slow {
+  animation: floatSlow 5.5s ease-in-out infinite;
+}
+
+.animate-wand-float {
+  animation: wandFloat 3.8s ease-in-out infinite;
+}
+
+.animate-glitch-amber {
+  animation: glitchAmber 1.6s infinite ease-in-out;
+}
+
+.animate-lock-flash {
+  animation: lockFlash 0.5s ease-out forwards;
+}
+
+/* Modern Dialog Animations (animate-to-from-top-layer guide) */
+dialog[open],
+[popover]:popover-open {
+  opacity: 1;
+  transform: scale(1);
+
+  @starting-style {
+    opacity: 0;
+    transform: scale(0.96);
+  }
+}
+
+dialog {
+  opacity: 0;
+  transform: scale(0.96);
+  transition-property: opacity, transform, display, overlay;
+  transition-duration: 0.25s;
+  transition-timing-function: cubic-bezier(0.16, 1, 0.3, 1);
+  transition-behavior: allow-discrete;
+}
+
+dialog::backdrop {
+  background-color: rgba(3, 7, 18, 0);
+  backdrop-filter: blur(0px);
+  -webkit-backdrop-filter: blur(0px);
+  transition-property: background-color, backdrop-filter, display, overlay;
+  transition-duration: 0.25s;
+  transition-timing-function: ease-out;
+  transition-behavior: allow-discrete;
+}
+
+dialog[open]::backdrop {
+  background-color: rgba(3, 7, 18, 0.78);
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+
+  @starting-style {
+    background-color: rgba(3, 7, 18, 0);
+    backdrop-filter: blur(0px);
+    -webkit-backdrop-filter: blur(0px);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  dialog {
+    transform: none;
+    transition-duration: 0.1s;
+  }
+  @starting-style {
+    dialog[open] {
+      transform: none;
+    }
+  }
+  .animate-float-slow,
+  .animate-wand-float,
+  .animate-glitch-amber {
+    animation: none;
+  }
+}
+
