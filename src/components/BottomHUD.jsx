@@ -14,7 +14,8 @@ import {
   ChevronUp, 
   CornerDownLeft,
   Check,
-  Sparkles
+  Sparkles,
+  BookMarked
 } from 'lucide-react';
 import DonutContextGauge from './DonutContextGauge';
 import MobileFloatingSendBubble from './MobileFloatingSendBubble';
@@ -108,6 +109,7 @@ export default function BottomHUD({
   // Dock Action Callbacks
   onOpenSessionDrawer,
   onOpenLorebook,
+  onOpenJournal,
   onOpenKeyPool,
   onOpenWorldState,
   onToggleLoreContext,
@@ -119,6 +121,7 @@ export default function BottomHUD({
   totalKeysCount = 0,
   sessionsCount = 0,
   language = 'vi',
+  hasJournal = false,
 
   // Summary request state
   isSummaryReq = false,
@@ -566,7 +569,22 @@ export default function BottomHUD({
           </span>
         </button>
 
-        {/* 3. Pool API Key */}
+        {/* 3. Chronicle Journal (Blank RAG Lore) */}
+        <button
+          onClick={onOpenJournal}
+          className={DOCK_BUTTON_CLASS}
+          title="Mở Chronicle Journal / Blank RAG Lore (Nhật ký sự kiện Markdown - Ctrl+J)"
+        >
+          <BookMarked size={18} className="group-hover:scale-110 transition-transform text-cyan-300" />
+          <span className="text-[8px] md:text-[9px] font-mono mt-0.5 md:mt-1 text-slate-300 group-hover:text-cyan-200 tracking-tight">
+            Journal
+          </span>
+          {hasJournal && (
+            <span className="absolute -top-1 -right-1 w-2.5 h-2.5 rounded-full bg-cyan-400 border border-cyber-950 shadow-[0_0_6px_rgba(0,240,255,0.8)] animate-pulse" />
+          )}
+        </button>
+
+        {/* 4. Pool API Key */}
         <button
           onClick={onOpenKeyPool}
           className={DOCK_BUTTON_CLASS}

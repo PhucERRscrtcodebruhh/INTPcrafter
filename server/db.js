@@ -246,6 +246,7 @@ async function provisionSchema() {
         title VARCHAR(255) NOT NULL,
         description TEXT NULL,
         system_instruction LONGTEXT NULL,
+        blank_rag_lore LONGTEXT NULL,
         language VARCHAR(20) NOT NULL DEFAULT 'vi',
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
         updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
@@ -305,6 +306,7 @@ async function provisionSchema() {
         book_id INT NULL,
         title VARCHAR(255) NOT NULL,
         rolling_threshold INT NOT NULL DEFAULT 32768,
+        blank_rag_lore LONGTEXT NULL,
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
         updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
         KEY idx_sessions_user (user_id),
@@ -331,6 +333,30 @@ async function provisionSchema() {
       ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
     `);
     console.log('[DB] lore_books / lore_entries / chat_sessions / chat_messages verified.');
+
+    // Migration: ensure blank_rag_lore exists on legacy databases
+    try {
+      const [bookCols] = await connection.query(
+        `SELECT COLUMN_NAME FROM INFORMATION_SCHEMA.COLUMNS
+         WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'lore_books' AND COLUMN_NAME = 'blank_rag_lore'`
+      );
+      if (bookCols.length === 0) {
+        await connection.query(`ALTER TABLE lore_books ADD COLUMN blank_rag_lore LONGTEXT NULL`);
+        console.log('[DB] Migrated: added blank_rag_lore column to lore_books.');
+      }
+
+      const [sessCols] = await connection.query(
+        `SELECT COLUMN_NAME FROM INFORMATION_SCHEMA.COLUMNS
+         WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'chat_sessions' AND COLUMN_NAME = 'blank_rag_lore'`
+      );
+      if (sessCols.length === 0) {
+        await connection.query(`ALTER TABLE chat_sessions ADD COLUMN blank_rag_lore LONGTEXT NULL`);
+        console.log('[DB] Migrated: added blank_rag_lore column to chat_sessions.');
+      }
+    } catch (migErr) {
+      console.warn('[DB] blank_rag_lore migration notice:', migErr.message);
+    }
+
 
     // 8. graph_states (user-owned React Flow canvas snapshots)
     await connection.query(`

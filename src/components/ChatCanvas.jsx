@@ -9,6 +9,7 @@ import WorldStateModal from './WorldStateModal';
 import LanguageModal from './LanguageModal';
 import ContextSettingsModal from './ContextSettingsModal';
 import ParameterSettingsModal from './chat/ParameterSettingsModal';
+import BlankRagLoreModal from './chat/BlankRagLoreModal';
 import { getModelSpec } from '../services/tokenEstimator';
 import { getProviderKeys, getActiveKeyCount } from '../services/keyAvailability';
 import { useSettingsStore } from '../store/useSettingsStore';
@@ -71,6 +72,7 @@ export default function ChatCanvas({
   const [isWorldStateModalOpen, setIsWorldStateModalOpen] = useState(false);
   const [isLanguageModalOpen, setIsLanguageModalOpen] = useState(false);
   const [isContextSettingsModalOpen, setIsContextSettingsModalOpen] = useState(false);
+  const [isJournalModalOpen, setIsJournalModalOpen] = useState(false);
   const [isBottomHudCollapsed, setIsBottomHudCollapsed] = useState(false);
   const { isCockpitOpen, setCockpitOpen } = useSettingsStore();
 
@@ -82,6 +84,18 @@ export default function ChatCanvas({
   useEffect(() => {
     setActiveLoreInDrawer(Array.isArray(retrievedLore) ? retrievedLore : []);
   }, [retrievedLore]);
+
+  // Ctrl+J / Cmd+J keyboard shortcut to toggle Chronicle Journal
+  useEffect(() => {
+    const handleKeyDown = (e) => {
+      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'j') {
+        e.preventDefault();
+        setIsJournalModalOpen(prev => !prev);
+      }
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, []);
 
   const handleOpenSpecificLore = (loreItem) => {
     setActiveLoreInDrawer([loreItem]);
@@ -106,6 +120,14 @@ export default function ChatCanvas({
   const activeKeysCount = getActiveKeyCount(keyStats, requiredProvider);
   const spec = getModelSpec(model);
   const contextLimit = spec?.contextLimit || 1048576;
+
+  // Determine if active session has journal entries
+  const currentSession = sessions.find(s => s.id === activeSessionId);
+  const currentBook = books.find(b => b.id === activeBookId);
+  const hasJournal = Boolean(
+    (currentSession?.blank_rag_lore && currentSession.blank_rag_lore.trim()) ||
+    (currentBook?.blank_rag_lore && currentBook.blank_rag_lore.trim())
+  );
 
   return (
     <div className="flex-1 flex flex-col h-full overflow-hidden relative bg-cyber-950 font-mono">
@@ -163,6 +185,7 @@ export default function ChatCanvas({
         onLinkBook={onLinkBook}
         onOpenSessionDrawer={() => setIsSessionDrawerOpen(true)}
         onOpenLorebook={onNavigateToLorebook}
+        onOpenJournal={() => setIsJournalModalOpen(true)}
         onOpenKeyPool={() => setIsKeyPoolModalOpen(true)}
         onOpenWorldState={() => setIsWorldStateModalOpen(true)}
         onToggleLoreContext={handleToggleLoreDrawer}
@@ -172,6 +195,7 @@ export default function ChatCanvas({
         totalKeysCount={totalKeysCount}
         sessionsCount={sessions.length}
         language={language}
+        hasJournal={hasJournal}
         isSummaryReq={isSummaryReq}
         setIsSummaryReq={setIsSummaryReq}
             />
@@ -267,6 +291,20 @@ export default function ChatCanvas({
         onClose={() => setCockpitOpen(false)}
         model={model}
         provider={requiredProvider}
+      />
+
+      {/* Chronicle Journal (Blank RAG Lore) Modal */}
+      <BlankRagLoreModal
+        isOpen={isJournalModalOpen}
+        onClose={() => setIsJournalModalOpen(false)}
+        sessionId={activeSessionId}
+        bookId={activeBookId}
+        sessionTitle={currentSession?.title || 'Active Chronicle'}
+        onJournalUpdated={(newLore) => {
+          if (currentSession) {
+            currentSession.blank_rag_lore = newLore;
+          }
+        }}
       />
     </div>
   );

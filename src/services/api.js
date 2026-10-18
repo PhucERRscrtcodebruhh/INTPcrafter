@@ -283,4 +283,15 @@ export const api = {
     method: 'POST',
     body: JSON.stringify({ instruction }),
   }),
+
+  // Chronicle Journal (Blank RAG Lore)
+  getSessionJournal: (sessionId) => request(`/sessions/${sessionId}/journal`),
+  updateSessionJournal: (sessionId, blankRagLore, updateBookDefault = false) => request(`/sessions/${sessionId}/journal`, {
+    method: 'PUT',
+    body: JSON.stringify({ blankRagLore, updateBookDefault }),
+  }),
+  updateBookJournal: (bookId, blankRagLore) => request(`/books/${bookId}/journal`, {
+    method: 'PUT',
+    body: JSON.stringify({ blankRagLore }),
+  }),
 };

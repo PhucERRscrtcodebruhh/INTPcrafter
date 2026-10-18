@@ -76,6 +76,7 @@ model LoreBook {
   title             String    @db.VarChar(255)
   description       String?   @db.Text
   systemInstruction String?   @map("system_instruction") @db.LongText
+  blankRagLore      String?   @map("blank_rag_lore") @db.LongText
   language          String    @default("vi") @db.VarChar(20)
   createdAt         DateTime  @default(now()) @map("created_at")
   updatedAt         DateTime  @default(now()) @updatedAt @map("updated_at")
@@ -140,6 +141,7 @@ model ChatSession {
   bookId           Int?     @map("book_id")
   title            String   @db.VarChar(255)
   rollingThreshold Int      @default(32768) @map("rolling_threshold")
+  blankRagLore     String?  @map("blank_rag_lore") @db.LongText
   createdAt        DateTime @default(now()) @map("created_at")
   updatedAt        DateTime @default(now()) @updatedAt @map("updated_at")
 
