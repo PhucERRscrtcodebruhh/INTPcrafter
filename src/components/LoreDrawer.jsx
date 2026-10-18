@@ -6,20 +6,24 @@ import {
   Layers, 
   ExternalLink, 
   Sparkles,
-  ChevronRight
+  ChevronRight,
+  Activity
 } from 'lucide-react';
 import { ClientRAGService } from '../services/ragEngine';
+import LiveStateDrawer from './LiveStateDrawer';
 
 export default function LoreDrawer({ 
   isOpen, 
   onClose, 
   retrievedLore = [], 
+  bookId = null,
+  onLiveStateUpdated,
   onNavigateToLorebook 
 }) {
   if (!isOpen) return null;
 
   return (
-    <aside className="w-80 sm:w-96 h-full border-l border-cyan-500/20 bg-cyber-900/95 backdrop-blur-md flex flex-col z-20 select-none shadow-2xl animate-fadeIn">
+    <aside className="w-80 sm:w-96 h-full border-l border-cyan-500/20 bg-cyber-900/95 backdrop-blur-md flex flex-col z-20 select-none shadow-2xl animate-fadeIn font-mono">
       {/* Header */}
       <div className="p-3 border-b border-cyan-500/15 flex items-center justify-between bg-cyber-950/60">
         <div className="flex items-center space-x-2">
@@ -41,7 +45,7 @@ export default function LoreDrawer({
 
       {/* Description */}
       <div className="px-4 py-2 bg-cyber-950/40 border-b border-slate-800 text-[11px] text-slate-400 leading-tight">
-        These world invariants were automatically retrieved by the MySQL RAG Engine and injected into the model's system prompt for deterministic consistency.
+        These world invariants were automatically retrieved by the MySQL RAG Engine. You can modify emergent <span className="text-[#00f0ff] font-bold">Live States (HEAD)</span> on the fly below.
       </div>
 
       {/* Lore Items List */}
@@ -57,11 +61,23 @@ export default function LoreDrawer({
         ) : (
           retrievedLore.map((item, idx) => {
             const categoryBadgeColor = ClientRAGService.getCategoryColor(item.category);
+            const hasActiveLiveState = Boolean(
+              item.liveState && (
+                item.liveState.status_summary ||
+                item.liveState.active_conditions ||
+                item.liveState.inventory_or_traits ||
+                item.liveState.rules_override
+              )
+            );
 
             return (
               <div
                 key={item.id || idx}
-                className="p-3.5 rounded-lg glass-panel-subtle border border-cyan-500/20 hover:border-cyan-500/40 transition-all space-y-2.5 text-xs"
+                className={`p-3.5 rounded-lg glass-panel-subtle border transition-all space-y-2.5 text-xs ${
+                  hasActiveLiveState
+                    ? 'border-[#00f0ff]/50 shadow-[0_0_15px_rgba(0,240,255,0.12)] bg-cyber-950/60'
+                    : 'border-cyan-500/20 hover:border-cyan-500/40'
+                }`}
               >
                 {/* Title & Category */}
                 <div className="flex items-start justify-between gap-2">
@@ -71,7 +87,7 @@ export default function LoreDrawer({
                     </h4>
                     {item.aliases && (
                       <p className="text-[10px] text-slate-400 font-mono mt-0.5">
-                        aka: {item.aliases}
+                        aka: {Array.isArray(item.aliases) ? item.aliases.join(', ') : item.aliases}
                       </p>
                     )}
                   </div>
@@ -87,25 +103,72 @@ export default function LoreDrawer({
                   </div>
                 )}
 
+                {/* Live HEAD State Card Preview if active */}
+                {hasActiveLiveState && (
+                  <div className="p-2 rounded bg-[#00f0ff]/10 border border-[#00f0ff]/30 text-cyan-200 text-[11px] space-y-1">
+                    <div className="flex items-center space-x-1.5 text-[#00f0ff] font-semibold text-[10px] uppercase tracking-wider">
+                      <span className="relative flex h-2 w-2">
+                        <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-[#00f0ff] opacity-75"></span>
+                        <span className="relative inline-flex rounded-full h-2 w-2 bg-[#00f0ff] shadow-[0_0_6px_#00f0ff]"></span>
+                      </span>
+                      <span>ACTIVE HEAD OVERLAY:</span>
+                    </div>
+                    {item.liveState.status_summary && (
+                      <p className="text-[11px] text-[#00f0ff] font-mono">
+                        • {item.liveState.status_summary}
+                      </p>
+                    )}
+                    {item.liveState.active_conditions && (
+                      <p className="text-[10px] text-cyan-300 font-mono">
+                        • Buffs/Debuffs: {item.liveState.active_conditions}
+                      </p>
+                    )}
+                    {item.liveState.inventory_or_traits && (
+                      <p className="text-[10px] text-cyan-300 font-mono">
+                        • Inventory: {item.liveState.inventory_or_traits}
+                      </p>
+                    )}
+                  </div>
+                )}
+
                 {/* Rules Box */}
-                {item.rules && (
+                {(item.rules || item.liveState?.rules_override) && (
                   <div className="p-2 rounded bg-amber-950/30 border border-amber-500/30 text-amber-200 text-[11px] space-y-1">
                     <div className="flex items-center space-x-1 text-amber-400 font-semibold text-[10px] uppercase tracking-wider">
                       <ShieldAlert size={12} />
-                      <span>INVARIANT RULES & CONSTRAINTS:</span>
+                      <span>RULES & CONSTRAINTS:</span>
                     </div>
-                    <div className="whitespace-pre-wrap font-mono leading-relaxed text-amber-100/90">
-                      {item.rules}
-                    </div>
+                    {item.liveState?.rules_override && (
+                      <div className="text-[11px] font-mono text-amber-300 font-bold">
+                        [OVERRIDE]: {item.liveState.rules_override}
+                      </div>
+                    )}
+                    {item.rules && (
+                      <div className="whitespace-pre-wrap font-mono leading-relaxed text-amber-100/80">
+                        {item.rules}
+                      </div>
+                    )}
                   </div>
                 )}
 
                 {/* Content Box */}
                 {item.content && (
-                  <div className="text-slate-300 text-[11px] leading-relaxed line-clamp-6 hover:line-clamp-none transition-all">
+                  <div className="text-slate-300 text-[11px] leading-relaxed line-clamp-4 hover:line-clamp-none transition-all">
                     {item.content}
                   </div>
                 )}
+
+                {/* ⚡ Live State (HEAD) Quick-Toggle Drawer */}
+                <div className="pt-2 border-t border-slate-800/80">
+                  <LiveStateDrawer
+                    bookId={item.book_id || bookId}
+                    entry={item}
+                    liveState={item.liveState}
+                    onStateUpdated={(entryId, delta) => {
+                      onLiveStateUpdated?.(entryId, delta);
+                    }}
+                  />
+                </div>
               </div>
             );
           })

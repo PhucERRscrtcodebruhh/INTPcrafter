@@ -228,6 +228,16 @@ export const api = {
     method: 'DELETE',
   }),
 
+  // Live State (HEAD) Overlay API
+  getLiveStates: (bookId) => request(`/lore/${bookId}/states`),
+  upsertLiveState: (bookId, entryId, delta) => request(`/lore/${bookId}/entries/${entryId}/state`, {
+    method: 'PUT',
+    body: JSON.stringify(delta),
+  }),
+  clearLiveState: (bookId, entryId) => request(`/lore/${bookId}/entries/${entryId}/state`, {
+    method: 'DELETE',
+  }),
+
   // RAG cache telemetry & manual invalidation
   getRagStats: () => request('/rag/stats'),
   invalidateRagCache: (bookId = null) => request('/rag/invalidate', {

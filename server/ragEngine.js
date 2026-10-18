@@ -19,8 +19,9 @@ const FTS_MIN_TOKEN_HITS = Number(process.env.RAG_FTS_MIN_TOKEN_HITS || 2);     
 // CACHES + TELEMETRY
 // ==========================================
 const bookMetaCache = new Map();  // `${userId}:${bookId}` -> { entries, lastUpdated }
-const payloadCache = new Map();   // `${userId}:${bookId}:${maxResults}:${signature}` -> { payload, expiresAt }
+const payloadCache = new Map();   // `${userId}:${bookId}:${maxResults}:${signature}` -> { rawLore, expiresAt }
 const ftsCache = new Map();       // `fts:${uid}:${bid}:${limit}:${tokens}` -> { candidates, expiresAt }
+const liveStateCache = new Map(); // `${userId}:${bookId}` -> { statesByEntryId: Map<entryId, StateDelta>, loadedAt }
 
 export const ragStats = {
   turns: 0,
@@ -172,9 +173,8 @@ export class RAGEngine {
       const fts = ftsCache.size;
       bookMetaCache.clear();
       payloadCache.clear();
-      // Content/alias edits also invalidate fulltext recall candidates; leaving them
-      // behind produced "ghost lore" hits for up to PAYLOAD_CACHE_TTL.
       ftsCache.clear();
+      liveStateCache.clear();
       return { scope: 'all', books, payloads, fts };
     }
 
@@ -182,6 +182,7 @@ export class RAGEngine {
     const prefix = `${metaKey}:`;
     const ftsPrefix = `fts:${userId}:${bookId}:`;
     bookMetaCache.delete(metaKey);
+    liveStateCache.delete(metaKey);
     for (const key of payloadCache.keys()) {
       if (key.startsWith(prefix)) payloadCache.delete(key);
     }
@@ -209,6 +210,11 @@ export class RAGEngine {
         removed += 1;
       }
     }
+    for (const key of Array.from(liveStateCache.keys())) {
+      if (key.endsWith(`:${bid}`)) {
+        liveStateCache.delete(key);
+      }
+    }
     for (const key of Array.from(payloadCache.keys())) {
       if (key.split(':')[1] === String(bid)) {
         payloadCache.delete(key);
@@ -222,6 +228,146 @@ export class RAGEngine {
       }
     }
     return { scope: `book:${bid}`, removed, books: bookMetaCache.size, payloads: payloadCache.size, fts: ftsCache.size };
+  }
+
+  /**
+   * In-Memory Live State Store (HEAD states per book/user).
+   * Returns Map<entryId, StateDelta> from liveStateCache if present and not expired (BOOK_CACHE_TTL).
+   * On cache miss, executes a single query to MySQL, populates liveStateCache and returns the Map.
+   */
+  static async getLiveStates({ userId, bookId }) {
+    const uid = parseInt(userId, 10);
+    const bid = parseInt(bookId, 10);
+    if (!uid || uid <= 0 || !bid || bid <= 0) {
+      return new Map();
+    }
+
+    const key = scopeKey(uid, bid);
+    const cached = liveStateCache.get(key);
+    if (cached && Date.now() - cached.loadedAt < BOOK_CACHE_TTL) {
+      return cached.statesByEntryId;
+    }
+
+    try {
+      const [rows] = await pool.query(
+        `SELECT entry_id, status_summary, active_conditions, inventory_or_traits, rules_override
+         FROM lore_live_states
+         WHERE user_id = ? AND book_id = ?`,
+        [uid, bid]
+      );
+      ragStats.dbQueries += 1;
+
+      const statesByEntryId = new Map();
+      for (const r of rows) {
+        statesByEntryId.set(r.entry_id, {
+          entry_id: r.entry_id,
+          status_summary: r.status_summary || '',
+          active_conditions: r.active_conditions || '',
+          inventory_or_traits: r.inventory_or_traits || '',
+          rules_override: r.rules_override || null,
+        });
+      }
+
+      liveStateCache.set(key, { statesByEntryId, loadedAt: Date.now() });
+      return statesByEntryId;
+    } catch (err) {
+      console.error('[RAG] getLiveStates error:', err);
+      return cached?.statesByEntryId || new Map();
+    }
+  }
+
+  /**
+   * Upsert Live State Delta for a specific entity/world entry.
+   * Performs INSERT INTO lore_live_states ... ON DUPLICATE KEY UPDATE ... in MySQL.
+   * Updates liveStateCache in-place in RAM (or deletes only the liveStateCache key for that scope).
+   * DO NOT call RAGEngine.invalidate() — L1 bookMetaCache and L2 payloadCache must stay warm!
+   */
+  static async upsertLiveState({ userId, bookId, entryId, delta = {} }) {
+    const uid = parseInt(userId, 10);
+    const bid = parseInt(bookId, 10);
+    const eid = parseInt(entryId, 10);
+    if (!uid || uid <= 0 || !bid || bid <= 0 || !eid || eid <= 0) {
+      throw new Error('upsertLiveState requires valid userId, bookId, and entryId');
+    }
+
+    const statusSummary = String(delta.status_summary ?? delta.statusSummary ?? '').slice(0, 500);
+    const activeConditions = String(delta.active_conditions ?? delta.activeConditions ?? '').slice(0, 500);
+    const inventoryOrTraits = String(delta.inventory_or_traits ?? delta.inventoryOrTraits ?? '').slice(0, 500);
+    const rawOverride = delta.rules_override !== undefined ? delta.rules_override : (delta.rulesOverride ?? null);
+    const rulesOverride = rawOverride !== null && rawOverride !== undefined ? String(rawOverride) : null;
+
+    await pool.query(
+      `INSERT INTO lore_live_states (user_id, book_id, entry_id, status_summary, active_conditions, inventory_or_traits, rules_override)
+       VALUES (?, ?, ?, ?, ?, ?, ?)
+       ON DUPLICATE KEY UPDATE
+         status_summary = VALUES(status_summary),
+         active_conditions = VALUES(active_conditions),
+         inventory_or_traits = VALUES(inventory_or_traits),
+         rules_override = VALUES(rules_override),
+         updated_at = CURRENT_TIMESTAMP`,
+      [uid, bid, eid, statusSummary, activeConditions, inventoryOrTraits, rulesOverride]
+    );
+
+    const stateRecord = {
+      entry_id: eid,
+      status_summary: statusSummary,
+      active_conditions: activeConditions,
+      inventory_or_traits: inventoryOrTraits,
+      rules_override: rulesOverride,
+    };
+
+    const key = scopeKey(uid, bid);
+    let cached = liveStateCache.get(key);
+    if (!cached) {
+      cached = { statesByEntryId: new Map(), loadedAt: Date.now() };
+      liveStateCache.set(key, cached);
+    }
+    cached.statesByEntryId.set(eid, stateRecord);
+
+    return stateRecord;
+  }
+
+  /**
+   * Reset an entity's Live State back to base canon.
+   * Removes override from both DB and liveStateCache.
+   * DO NOT call RAGEngine.invalidate()!
+   */
+  static async clearLiveState({ userId, bookId, entryId }) {
+    const uid = parseInt(userId, 10);
+    const bid = parseInt(bookId, 10);
+    const eid = parseInt(entryId, 10);
+    if (!uid || uid <= 0 || !bid || bid <= 0 || !eid || eid <= 0) {
+      throw new Error('clearLiveState requires valid userId, bookId, and entryId');
+    }
+
+    await pool.query(
+      `DELETE FROM lore_live_states WHERE user_id = ? AND book_id = ? AND entry_id = ?`,
+      [uid, bid, eid]
+    );
+
+    const key = scopeKey(uid, bid);
+    const cached = liveStateCache.get(key);
+    if (cached) {
+      cached.statesByEntryId.delete(eid);
+    }
+
+    return { success: true, clearedEntryId: eid };
+  }
+
+  /**
+   * Non-destructively overlays Live HEAD states onto Base Canon entries.
+   */
+  static applyLiveStateOverlay(baseLore, statesMap) {
+    if (!Array.isArray(baseLore) || baseLore.length === 0) return [];
+    if (!statesMap || statesMap.size === 0) return baseLore.map(entry => ({ ...entry }));
+    return baseLore.map(entry => {
+      const delta = statesMap.get(entry.id);
+      if (!delta) return { ...entry };
+      return {
+        ...entry,
+        liveState: delta, // { status_summary, active_conditions, inventory_or_traits, rules_override }
+      };
+    });
   }
 
   /**
@@ -371,61 +517,71 @@ export class RAGEngine {
       const pKey = signatureKey(uid, bid, limit, signature);
 
       const cachedPayload = payloadCache.get(pKey);
+      let rawLore = null;
+      let isCacheHit = false;
+
       if (cachedPayload && cachedPayload.expiresAt > Date.now()) {
         ragStats.payloadHits += 1;
-        if (ragStats.dbQueries === queriesAtTurnStart) ragStats.dbFreeTurns += 1;
-        return {
-          ...cachedPayload.payload,
-          cache: { metadata: 'hit', payload: 'hit', dbQueries: ragStats.dbQueries - queriesAtTurnStart },
-        };
-      }
-      if (cachedPayload) payloadCache.delete(pKey);
-      ragStats.payloadMisses += 1;
+        rawLore = cachedPayload.rawLore || cachedPayload.payload?.retrievedLore || [];
+        isCacheHit = true;
+      } else {
+        if (cachedPayload) payloadCache.delete(pKey);
+        ragStats.payloadMisses += 1;
 
+        // 4. Hydrate ONLY the winning rows (double-scoped: user + book)
+        rawLore = [];
+        if (signature.length > 0) {
+          const placeholders = signature.map(() => '?').join(', ');
+          const [records] = await pool.query(
+            `SELECT id, book_id, category, title, aliases, content, rules
+             FROM lore_entries
+             WHERE user_id = ? AND book_id = ? AND id IN (${placeholders})`,
+            [uid, bid, ...signature]
+          );
+          ragStats.dbQueries += 1;
 
-
-
-      // 4. Hydrate ONLY the winning rows (double-scoped: user + book)
-      let retrievedLore = [];
-      if (signature.length > 0) {
-        const placeholders = signature.map(() => '?').join(', ');
-        const [records] = await pool.query(
-          `SELECT id, book_id, category, title, aliases, content, rules
-           FROM lore_entries
-           WHERE user_id = ? AND book_id = ? AND id IN (${placeholders})`,
-          [uid, bid, ...signature]
-        );
-        ragStats.dbQueries += 1;
-
-        const recordMap = new Map(records.map(r => [r.id, r]));
-        for (const [id, meta] of ranked) {
-          const row = recordMap.get(id);
-          if (!row) continue;
-          retrievedLore.push({
-            ...row,
-            aliases: parseAliases(row.aliases),
-            score: meta.score,
-            matchReason: meta.matchReason,
-          });
+          const recordMap = new Map(records.map(r => [r.id, r]));
+          for (const [id, meta] of ranked) {
+            const row = recordMap.get(id);
+            if (!row) continue;
+            rawLore.push({
+              ...row,
+              aliases: parseAliases(row.aliases),
+              score: meta.score,
+              matchReason: meta.matchReason,
+            });
+          }
         }
+
+        const now = Date.now();
+        sweepPayloadCache(now);
+        // payloadCache stores ONLY the pure immutable Base Canon
+        payloadCache.set(pKey, { rawLore, expiresAt: now + PAYLOAD_CACHE_TTL });
       }
+
+      // 5. Post-Cache State Stitching (Zero-Cache-Invalidation Live Overlay)
+      const statesMap = await this.getLiveStates({ userId: uid, bookId: bid });
+      const retrievedLore = this.applyLiveStateOverlay(rawLore, statesMap);
 
       ragStats.entitiesInjected += retrievedLore.length;
+      if (isCacheHit && ragStats.dbQueries === queriesAtTurnStart) {
+        ragStats.dbFreeTurns += 1;
+      }
 
-      const payload = {
-        retrievedLore,
-        formattedContext: retrievedLore.length > 0 ? this.formatContextBlock(retrievedLore) : '',
-        retrievedLoreIds: retrievedLore.map(r => r.id).join(','),
-        reason: retrievedLore.length > 0 ? 'ok' : 'no_match',
-      };
-
-      const now = Date.now();
-      sweepPayloadCache(now);
-      payloadCache.set(pKey, { payload, expiresAt: now + PAYLOAD_CACHE_TTL });
+      const formattedContext = retrievedLore.length > 0 ? this.formatContextBlock(retrievedLore) : '';
+      const retrievedLoreIds = retrievedLore.map(r => r.id).join(',');
+      const reason = retrievedLore.length > 0 ? 'ok' : 'no_match';
 
       return {
-        ...payload,
-        cache: { metadata: 'hit', payload: 'miss', dbQueries: ragStats.dbQueries - queriesAtTurnStart },
+        retrievedLore,
+        formattedContext,
+        retrievedLoreIds,
+        reason,
+        cache: {
+          metadata: 'hit',
+          payload: isCacheHit ? 'hit' : 'miss',
+          dbQueries: ragStats.dbQueries - queriesAtTurnStart,
+        },
       };
     } catch (err) {
       console.error('[RAG] Error:', err);
@@ -551,10 +707,30 @@ export class RAGEngine {
       const aliasStr = Array.isArray(entry.aliases) && entry.aliases.length > 0
         ? ` [Aliases: ${entry.aliases.join(', ')}]`
         : '';
-      const { text: rulesText } = clampText(entry.rules || '', RULES_CHAR_BUDGET);
+
+      // Priority rules override for one-liner
+      let rulesSource = entry.rules || '';
+      if (entry.liveState?.rules_override) {
+        rulesSource = entry.rules
+          ? `[OVERRIDE]: ${entry.liveState.rules_override}; [BASE]: ${entry.rules}`
+          : `[OVERRIDE]: ${entry.liveState.rules_override}`;
+      }
+      const { text: rulesText } = clampText(rulesSource, RULES_CHAR_BUDGET);
       const rulesStr = rulesText ? ` (Constraints: ${rulesText})` : '';
+
+      // Live state one-liner snippet: [NOW: ${status_summary} | ${active_conditions}]
+      let liveNowStr = '';
+      if (entry.liveState) {
+        const summary = String(entry.liveState.status_summary || '').trim();
+        const conditions = String(entry.liveState.active_conditions || '').trim();
+        if (summary || conditions) {
+          const details = [summary, conditions].filter(Boolean).join(' | ');
+          liveNowStr = ` [NOW: ${details}]`;
+        }
+      }
+
       const { text: contentText } = clampText(entry.content || entry.canonicalLore || '', PER_ENTRY_CHAR_BUDGET);
-      const line = `<${entry.category || 'Entity'}: ${entry.title || 'Untitled'}>${aliasStr}${rulesStr} -> ${contentText}`;
+      const line = `<${entry.category || 'Entity'}: ${entry.title || 'Untitled'}>${aliasStr}${rulesStr}${liveNowStr} -> ${contentText}`;
 
       if (used + line.length > TOTAL_CHAR_BUDGET) {
         dropped += 1;
@@ -586,15 +762,46 @@ export class RAGEngine {
       const aliasStr = Array.isArray(entry.aliases) && entry.aliases.length > 0
         ? `Aliases: ${entry.aliases.join(', ')}`
         : '';
-      const rulesStr = entry.rules ? `[RULES & LOGICAL CONSTRAINTS]:\n${clampText(entry.rules, RULES_CHAR_BUDGET).text}` : '';
+
+      // Priority rules override for full block
+      let combinedRules = '';
+      if (entry.liveState?.rules_override && entry.rules) {
+        combinedRules = `[PRIORITY RULES OVERRIDE]: ${entry.liveState.rules_override}\n[BASE CANON RULES]: ${entry.rules}`;
+      } else if (entry.liveState?.rules_override) {
+        combinedRules = `[PRIORITY RULES OVERRIDE]: ${entry.liveState.rules_override}`;
+      } else if (entry.rules) {
+        combinedRules = entry.rules;
+      }
+      const rulesStr = combinedRules
+        ? `[RULES & LOGICAL CONSTRAINTS]:\n${clampText(combinedRules, RULES_CHAR_BUDGET).text}`
+        : '';
+
+      // Prominent LIVE HEAD STATE block right above [CANONICAL CONTENT]
+      let liveStateBlock = '';
+      if (entry.liveState) {
+        const parts = [];
+        if (entry.liveState.status_summary) {
+          parts.push(`- Status: ${entry.liveState.status_summary}`);
+        }
+        if (entry.liveState.active_conditions) {
+          parts.push(`- Active Conditions: ${entry.liveState.active_conditions}`);
+        }
+        if (entry.liveState.inventory_or_traits) {
+          parts.push(`- Inventory / Active Traits: ${entry.liveState.inventory_or_traits}`);
+        }
+        if (parts.length > 0) {
+          liveStateBlock = `[LIVE HEAD STATE - OVERRIDES BASE CANON WHERE CONFLICTING]:\n${parts.join('\n')}`;
+        }
+      }
+
       const contentStr = (entry.content || entry.canonicalLore)
         ? `[CANONICAL CONTENT]:\n${clampText(entry.content || entry.canonicalLore, PER_ENTRY_CHAR_BUDGET).text}`
         : '';
 
+      const blockSections = [aliasStr, rulesStr, liveStateBlock, contentStr].filter(Boolean).join('\n');
+
       return `=== [LORE RECORD #${idx + 1}] ${entry.title} (${entry.category || 'General'}) ===
-${aliasStr}
-${rulesStr}
-${contentStr}
+${blockSections}
 =========================================================`;
     }).join('\n\n');
 

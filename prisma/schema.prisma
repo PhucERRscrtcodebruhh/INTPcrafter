@@ -55,6 +55,7 @@ model User {
   sessions    ChatSession[]
   messages    ChatMessage[]
   loreEntries LoreEntry[]
+  liveStates  LoreLiveState[]
   apiKeys     UserApiKey[]
   graphStates GraphState[]
   connections NodeConnection[]
@@ -79,8 +80,9 @@ model LoreBook {
   createdAt         DateTime  @default(now()) @map("created_at")
   updatedAt         DateTime  @default(now()) @updatedAt @map("updated_at")
 
-  user        User          @relation(fields: [userId], references: [id], onDelete: Cascade)
+  user        User            @relation(fields: [userId], references: [id], onDelete: Cascade)
   entries     LoreEntry[]
+  liveStates  LoreLiveState[]
   sessions    ChatSession[]
 
   @@index([userId], name: "idx_books_user")
@@ -102,13 +104,34 @@ model LoreEntry {
   createdAt DateTime @default(now()) @map("created_at")
   updatedAt DateTime @default(now()) @updatedAt @map("updated_at")
 
-  user User     @relation(fields: [userId], references: [id], onDelete: Cascade)
-  book LoreBook @relation(fields: [bookId], references: [id], onDelete: Cascade)
+  user       User            @relation(fields: [userId], references: [id], onDelete: Cascade)
+  book       LoreBook        @relation(fields: [bookId], references: [id], onDelete: Cascade)
+  liveStates LoreLiveState[]
 
   @@index([userId, bookId], name: "idx_lore_scope")
   @@index([worldId, category], name: "idx_lore_world_category")
   @@fulltext([title, aliases, content], name: "idx_lore_fts")
   @@map("lore_entries")
+}
+
+model LoreLiveState {
+  id                Int       @id @default(autoincrement())
+  userId            Int       @map("user_id")
+  bookId            Int       @map("book_id")
+  entryId           Int       @map("entry_id")
+  statusSummary     String    @default("") @map("status_summary") @db.VarChar(500)
+  activeConditions  String?   @default("") @map("active_conditions") @db.VarChar(500)
+  inventoryOrTraits String?   @default("") @map("inventory_or_traits") @db.VarChar(500)
+  rulesOverride     String?   @map("rules_override") @db.Text
+  updatedAt         DateTime  @default(now()) @updatedAt @map("updated_at")
+
+  user  User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  book  LoreBook  @relation(fields: [bookId], references: [id], onDelete: Cascade)
+  entry LoreEntry @relation(fields: [entryId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, bookId, entryId], name: "uq_live_entry")
+  @@index([userId, bookId], name: "idx_scope_lookup")
+  @@map("lore_live_states")
 }
 
 model ChatSession {

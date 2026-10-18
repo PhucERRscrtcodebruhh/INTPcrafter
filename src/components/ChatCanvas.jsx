@@ -225,6 +225,15 @@ export default function ChatCanvas({
         isOpen={loreDrawerOpen}
         onClose={() => setLoreDrawerOpen(false)}
         retrievedLore={activeLoreInDrawer.length > 0 ? activeLoreInDrawer : retrievedLore}
+        bookId={activeBookId}
+        onLiveStateUpdated={(entryId, updatedDelta) => {
+          setActiveLoreInDrawer(prev => prev.map(item => {
+            if (item.id === entryId) {
+              return { ...item, liveState: updatedDelta };
+            }
+            return item;
+          }));
+        }}
         onNavigateToLorebook={onNavigateToLorebook}
       />
 

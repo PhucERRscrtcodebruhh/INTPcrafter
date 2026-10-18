@@ -23,6 +23,19 @@ export const ClientRAGService = {
     return await api.deleteLore(id);
   },
 
+  async getLiveStates(bookId) {
+    if (!bookId) return [];
+    return await api.getLiveStates(bookId);
+  },
+
+  async upsertLiveState(bookId, entryId, delta) {
+    return await api.upsertLiveState(bookId, entryId, delta);
+  },
+
+  async clearLiveState(bookId, entryId) {
+    return await api.clearLiveState(bookId, entryId);
+  },
+
   getCategoryColor(category) {
     switch (category) {
       case 'Character':

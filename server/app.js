@@ -975,8 +975,10 @@ app.get('/api/books/:id/entries', requireAuth, async (req, res) => {
 
     sql += ` ORDER BY title ASC`;
     const [rows] = await pool.query(sql, params);
+    const statesMap = await RAGEngine.getLiveStates({ userId, bookId });
     const processed = rows.map(r => ({
       ...r,
+      liveState: statesMap.get(r.id) || null,
       canonicalLore: r.content || '',
       metadata: typeof r.metadata === 'string' ? JSON.parse(r.metadata || '{}') : (r.metadata || {})
     }));
@@ -1197,6 +1199,97 @@ app.delete('/api/lore/:id', requireAuth, async (req, res) => {
     RAGEngine.invalidate({ userId, bookId: rows[0].book_id });
 
     res.json({ success: true, deletedId: id });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ==========================================
+// LIVE EMERGENT ENTITY & WORLD STATE API
+// ==========================================
+
+// GET /api/lore/:bookId/states: Fetch all active HEAD states for a book
+app.get('/api/lore/:bookId/states', requireAuth, async (req, res) => {
+  try {
+    const userId = req.user.id;
+    const bookId = parseInt(req.params.bookId, 10);
+    if (!Number.isFinite(bookId) || bookId <= 0) {
+      return res.status(400).json({ error: 'Invalid bookId' });
+    }
+
+    const [bookRows] = await pool.query(
+      `SELECT id FROM lore_books WHERE id = ? AND user_id = ? LIMIT 1`,
+      [bookId, userId]
+    );
+    if (bookRows.length === 0) {
+      return res.status(404).json({ error: 'Book not found for this account.' });
+    }
+
+    const statesMap = await RAGEngine.getLiveStates({ userId, bookId });
+    const states = Array.from(statesMap.values());
+    res.json(states);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// PUT /api/lore/:bookId/entries/:entryId/state: Upsert live state for an entity/world entry
+app.put('/api/lore/:bookId/entries/:entryId/state', requireAuth, async (req, res) => {
+  try {
+    const userId = req.user.id;
+    const bookId = parseInt(req.params.bookId, 10);
+    const entryId = parseInt(req.params.entryId, 10);
+    if (!Number.isFinite(bookId) || bookId <= 0 || !Number.isFinite(entryId) || entryId <= 0) {
+      return res.status(400).json({ error: 'Invalid bookId or entryId' });
+    }
+
+    const [entryRows] = await pool.query(
+      `SELECT id FROM lore_entries WHERE id = ? AND book_id = ? AND user_id = ? LIMIT 1`,
+      [entryId, bookId, userId]
+    );
+    if (entryRows.length === 0) {
+      return res.status(404).json({ error: 'Lore entry not found for this book and account.' });
+    }
+
+    const { status_summary, active_conditions, inventory_or_traits, rules_override } = req.body || {};
+    const stateRecord = await RAGEngine.upsertLiveState({
+      userId,
+      bookId,
+      entryId,
+      delta: {
+        status_summary,
+        active_conditions,
+        inventory_or_traits,
+        rules_override,
+      },
+    });
+
+    res.json({ success: true, state: stateRecord });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// DELETE /api/lore/:bookId/entries/:entryId/state: Reset entity to base canon
+app.delete('/api/lore/:bookId/entries/:entryId/state', requireAuth, async (req, res) => {
+  try {
+    const userId = req.user.id;
+    const bookId = parseInt(req.params.bookId, 10);
+    const entryId = parseInt(req.params.entryId, 10);
+    if (!Number.isFinite(bookId) || bookId <= 0 || !Number.isFinite(entryId) || entryId <= 0) {
+      return res.status(400).json({ error: 'Invalid bookId or entryId' });
+    }
+
+    const [entryRows] = await pool.query(
+      `SELECT id FROM lore_entries WHERE id = ? AND book_id = ? AND user_id = ? LIMIT 1`,
+      [entryId, bookId, userId]
+    );
+    if (entryRows.length === 0) {
+      return res.status(404).json({ error: 'Lore entry not found for this book and account.' });
+    }
+
+    await RAGEngine.clearLiveState({ userId, bookId, entryId });
+    res.json({ success: true, clearedEntryId: entryId });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }

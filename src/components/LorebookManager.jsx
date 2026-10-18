@@ -12,6 +12,7 @@ import {
 } from 'lucide-react';
 import { ClientRAGService } from '../services/ragEngine';
 import LoreEntityModal from './modals/LoreEntityModal';
+import LiveStateDrawer from './LiveStateDrawer';
 
 const CATEGORIES = ['All', 'Character', 'MagicSystem', 'Location', 'Event', 'Timeline', 'Faction', 'General'];
 
@@ -22,6 +23,16 @@ export default function LorebookManager({ bookId, bookTitle, onEntriesUpdated })
   const [isLoading, setIsLoading] = useState(false);
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [editingEntry, setEditingEntry] = useState(null);
+
+  const handleLiveStateUpdated = (entryId, updatedState) => {
+    setLoreList(prev => prev.map(item => {
+      if (item.id === entryId) {
+        return { ...item, liveState: updatedState };
+      }
+      return item;
+    }));
+    onEntriesUpdated?.();
+  };
 
   const loadLore = async () => {
     setIsLoading(true);
@@ -168,11 +179,23 @@ export default function LorebookManager({ bookId, bookTitle, onEntriesUpdated })
           <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-3">
             {loreList.map(entry => {
               const catColor = ClientRAGService.getCategoryColor(entry.category);
+              const hasActiveLiveState = Boolean(
+                entry.liveState && (
+                  entry.liveState.status_summary ||
+                  entry.liveState.active_conditions ||
+                  entry.liveState.inventory_or_traits ||
+                  entry.liveState.rules_override
+                )
+              );
 
               return (
                 <div
                   key={entry.id}
-                  className="p-4 rounded-lg glass-panel-subtle border border-cyan-500/20 hover:border-cyan-500/40 transition-all flex flex-col justify-between space-y-3"
+                  className={`p-4 rounded-lg glass-panel-subtle border transition-all flex flex-col justify-between space-y-3 ${
+                    hasActiveLiveState
+                      ? 'border-[#00f0ff]/50 shadow-[0_0_15px_rgba(0,240,255,0.12)]'
+                      : 'border-cyan-500/20 hover:border-cyan-500/40'
+                  }`}
                 >
                   <div className="space-y-2">
                     {/* Header */}
@@ -237,6 +260,16 @@ export default function LorebookManager({ bookId, bookTitle, onEntriesUpdated })
                         {entry.content}
                       </div>
                     )}
+
+                    {/* Live State (HEAD) Overlay Drawer */}
+                    <div className="pt-2 border-t border-slate-800/60">
+                      <LiveStateDrawer
+                        bookId={bookId || entry.book_id}
+                        entry={entry}
+                        liveState={entry.liveState}
+                        onStateUpdated={handleLiveStateUpdated}
+                      />
+                    </div>
                   </div>
 
                   {/* Actions Footer */}

@@ -277,6 +277,26 @@ async function provisionSchema() {
       ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
     `);
 
+    // 5b. lore_live_states (HEAD state overlay per (user_id, book_id, entry_id))
+    await connection.query(`
+      CREATE TABLE IF NOT EXISTS lore_live_states (
+        id INT AUTO_INCREMENT PRIMARY KEY,
+        user_id INT NOT NULL,
+        book_id INT NOT NULL,
+        entry_id INT NOT NULL,
+        status_summary VARCHAR(500) NOT NULL DEFAULT '',
+        active_conditions VARCHAR(500) DEFAULT '',
+        inventory_or_traits VARCHAR(500) DEFAULT '',
+        rules_override TEXT NULL,
+        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+        UNIQUE KEY uq_live_entry (user_id, book_id, entry_id),
+        KEY idx_scope_lookup (user_id, book_id),
+        CONSTRAINT fk_live_user FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+        CONSTRAINT fk_live_book FOREIGN KEY (book_id) REFERENCES lore_books(id) ON DELETE CASCADE,
+        CONSTRAINT fk_live_entry FOREIGN KEY (entry_id) REFERENCES lore_entries(id) ON DELETE CASCADE
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+    `);
+
     // 6. chat_sessions (user-owned chronicles linked to one lore book)
     await connection.query(`
       CREATE TABLE IF NOT EXISTS chat_sessions (
