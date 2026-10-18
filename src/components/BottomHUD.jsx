@@ -449,15 +449,6 @@ export default function BottomHUD({
               )}
             </div>
 
-            {/* Mobile Only: Compact non-intrusive Context Bubble trigger (Draggable & Non-Destructive) */}
-            <div className="flex md:hidden items-center shrink-0 ml-auto">
-              <MobileContextBubbleTrigger
-                currentTokens={currentTokens}
-                limit={limit}
-                percentage={contextPercent}
-                onClick={() => setIsMobileContextOpen(true)}
-              />
-            </div>
           </div>
 
           {/* Mobile-only 2px context progress bar, directly above the input */}
@@ -654,6 +645,14 @@ export default function BottomHUD({
           </span>
         </button>
       </div>
+
+      {/* Visible ONLY on mobile (< md breakpoint) — Floating Action Bubble (FAB) */}
+      <MobileContextBubbleTrigger
+        currentTokens={currentTokens}
+        limit={limit}
+        percentage={contextPercent}
+        onClick={() => setIsMobileContextOpen(true)}
+      />
 
       {/* Non-Destructive Mobile Context Drawer (mounted via Portal) */}
       <MobileContextDrawer
