@@ -13,8 +13,6 @@ import {
   hasActiveKey,
 } from './services/keyAvailability';
 import { useSettingsStore } from './store/useSettingsStore';
-import { saveMessagesToStore, saveMessageToStore, assembleTier3Context } from './services/contextService';
-
 
 
 // Default first-session guide message (inserted as model response on first session)
@@ -358,9 +356,6 @@ export default function App() {
   const loadMessages = async (sessionId) => {
     try {
       const msgs = await api.getSessionMessages(sessionId);
-      if (msgs && msgs.length > 0) {
-        await saveMessagesToStore(msgs);
-      }
       setMessages(prev => {
         if (msgs && msgs.length > 0) {
           const hasDbModel = msgs.some(m => m.role === 'model');
@@ -533,7 +528,7 @@ export default function App() {
     setStreamingLore([]);
     setErrorMessage(null);
 
-    // Optimistically show user message and persist to IndexedDB
+    // Optimistically show user message
     const tempUserMsg = {
       id: 'temp_' + Date.now(),
       session_id: activeSessionId,
@@ -542,11 +537,7 @@ export default function App() {
       retrieved_lore_ids: '',
       created_at: new Date().toISOString()
     };
-    await saveMessageToStore(tempUserMsg);
     setMessages(prev => [...prev, tempUserMsg]);
-
-    // Ensure Tier 3 context pipeline queries full IndexedDB history (isolated from DOM virtualization)
-    await assembleTier3Context(activeSessionId);
 
     let accumulatedText = '';
     const promptToSend = isSummaryReq

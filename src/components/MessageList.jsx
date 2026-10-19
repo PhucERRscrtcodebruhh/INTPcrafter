@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useRef, useCallback, memo } from 'react';
+import { useVirtualizer } from '@tanstack/react-virtual';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import remarkMath from 'remark-math';
@@ -23,7 +24,6 @@ import {
   CornerDownLeft
 } from 'lucide-react';
 import { estimateTokens, formatTokenCount } from '../services/tokenEstimator';
-import ChatStream from './ChatStream';
 
 function extractThinkingAndStory(content, isStillStreaming = false) {
   if (!content) return { thinking: null, story: '', isThinkingOpen: false };
@@ -476,7 +476,189 @@ function StreamingBubble({ streamingText, streamingLore }) {
   );
 }
 
-export default function MessageList(props) {
-  return <ChatStream {...props} />;
-}
+export default function MessageList({
+  messages = [],
+  isLoading,
+  isStreaming = false,
+  streamingText = '',
+  streamingLore = [],
+  onSelectLoreEntry,
+  onOpenLoreDrawer,
+  onEditMessage,
+  onDeleteMessage,
+  onRegenerateMessage,
+  currentUser = null
+}) {
+  const parentRef = useRef(null);
+  const scrollEndRef = useRef(null);
+  const [copiedId, setCopiedId] = useState(null);
+  const lastScrollTimeRef = useRef(0);
 
+  // Inline editing state
+  const [editingId, setEditingId] = useState(null);
+  const [editingContent, setEditingContent] = useState('');
+
+  // Presentation layer virtualization using @tanstack/react-virtual
+  const virtualizer = useVirtualizer({
+    count: messages.length,
+    getScrollElement: () => parentRef.current,
+    estimateSize: () => 60,
+    overscan: 3,
+  });
+
+  // Smoothly follows incoming streaming tokens when near the bottom
+  useEffect(() => {
+    if (!parentRef.current) return;
+    const { scrollHeight, scrollTop, clientHeight } = parentRef.current;
+    const isNearBottom = scrollHeight - scrollTop - clientHeight < 250;
+
+    if (isStreaming) {
+      const now = Date.now();
+      if (now - lastScrollTimeRef.current > 60) {
+        lastScrollTimeRef.current = now;
+        if (isNearBottom) {
+          parentRef.current.scrollTop = parentRef.current.scrollHeight;
+        }
+      }
+    } else if (isNearBottom || messages.length <= 2) {
+      parentRef.current.scrollTo({
+        top: parentRef.current.scrollHeight,
+        behavior: 'smooth'
+      });
+    }
+  }, [messages.length, streamingText, isLoading, isStreaming]);
+
+  const handleCopy = useCallback((text, id) => {
+    navigator.clipboard.writeText(text);
+    setCopiedId(id);
+    setTimeout(() => setCopiedId(null), 2000);
+  }, []);
+
+  const handleStartEdit = useCallback((msg) => {
+    setEditingId(msg.id);
+    setEditingContent(msg.content);
+  }, []);
+
+  const handleCancelEdit = useCallback(() => {
+    setEditingId(null);
+    setEditingContent('');
+  }, []);
+
+  const handleEditContentChange = useCallback((val) => {
+    setEditingContent(val);
+  }, []);
+
+  const handleSaveEdit = useCallback(async (msg, shouldRegenerate = false) => {
+    if (!editingContent.trim()) return;
+    const newContent = editingContent.trim();
+    setEditingId(null);
+    setEditingContent('');
+
+    if (onEditMessage) {
+      await onEditMessage(msg.id, newContent, shouldRegenerate, msg.role);
+    }
+  }, [editingContent, onEditMessage]);
+
+  const isBusy = isLoading || isStreaming;
+
+  if (messages.length === 0 && !isLoading && !isStreaming) {
+    return (
+      <div className="flex-1 flex flex-col items-center justify-center p-4 md:p-6 text-center select-none">
+        <div className="w-14 h-14 rounded-full bg-cyan-950/60 border border-cyan-500/30 flex items-center justify-center text-cyan-400 mb-4 shadow-glow-cyan-sm">
+          <Sparkles size={26} />
+        </div>
+        <h2 className="text-base font-bold text-slate-200 uppercase tracking-wider mb-2">
+          StoryContainer Studio // Standby
+        </h2>
+        <p className="text-xs text-slate-400 max-w-md mb-6 leading-relaxed">
+          DeepSeek & Gemini Multi-Provider Story Architecture with Deterministic INTP World Simulator. Direct the world below or begin your chronicle.
+        </p>
+      </div>
+    );
+  }
+
+  return (
+    <div
+      ref={parentRef}
+      className="flex-1 overflow-y-auto px-2.5 sm:px-4 md:px-12 py-3 md:py-4 scrollbar-thin scrollbar-thumb-cyan-500/20"
+      style={{ height: '100%', overflowAnchor: 'none' }}
+    >
+      {/* Virtual scroll track mapping only visible items */}
+      <div
+        style={{
+          height: `${virtualizer.getTotalSize()}px`,
+          width: '100%',
+          position: 'relative',
+        }}
+      >
+        {virtualizer.getVirtualItems().map((virtualRow) => {
+          const msg = messages[virtualRow.index];
+          if (!msg) return null;
+          return (
+            <div
+              key={virtualRow.key}
+              data-index={virtualRow.index}
+              ref={virtualizer.measureElement}
+              className="chat-bubble chat-message-bubble w-full my-2"
+              style={{
+                position: 'absolute',
+                top: 0,
+                left: 0,
+                width: '100%',
+                transform: `translateY(${virtualRow.start}px)`,
+              }}
+            >
+              <MessageItem
+                msg={msg}
+                idx={virtualRow.index}
+                isBusy={isBusy}
+                isEditing={editingId === msg.id}
+                editingContent={editingContent}
+                onStartEdit={handleStartEdit}
+                onCancelEdit={handleCancelEdit}
+                onSaveEdit={handleSaveEdit}
+                onEditContentChange={handleEditContentChange}
+                onDeleteMessage={onDeleteMessage}
+                onRegenerateMessage={onRegenerateMessage}
+                onOpenLoreDrawer={onOpenLoreDrawer}
+                onSelectLoreEntry={onSelectLoreEntry}
+                onCopy={handleCopy}
+                isCopied={copiedId === (msg.id || virtualRow.index)}
+                currentUser={currentUser}
+              />
+            </div>
+          );
+        })}
+      </div>
+
+      {/* Real-time Streaming & Typing Effect Bubble */}
+      {isStreaming && (
+        <StreamingBubble
+          streamingText={streamingText}
+          streamingLore={streamingLore}
+        />
+      )}
+
+      {/* Loading Skeleton before first token chunk */}
+      {isLoading && !isStreaming && (
+        <div className="flex justify-start items-start gap-3 w-full my-3.5 group animate-fadeIn">
+          <div className="w-9 h-9 sm:w-10 sm:h-10 rounded-full shrink-0 border-2 border-cyan-400/60 bg-cyan-950 flex items-center justify-center text-cyan-300 font-mono font-bold text-xs shadow-glow-cyan-sm">
+            <Cpu size={14} className="animate-spin text-cyan-300" />
+          </div>
+          <div className="flex-1 max-w-xl p-4 rounded-2xl rounded-tl-sm glass-panel border border-cyan-500/30 text-xs text-slate-400 space-y-2">
+            <div className="flex items-center space-x-2">
+              <div className="w-2 h-2 rounded-full bg-cyan-400 animate-ping" />
+              <span className="text-cyan-300 font-mono text-[11px]">
+                Running Cognitive Trace & RAG Matrix...
+              </span>
+            </div>
+            <div className="h-2.5 bg-cyber-850 rounded w-5/6 animate-pulse" />
+            <div className="h-2.5 bg-cyber-850 rounded w-4/6 animate-pulse" />
+          </div>
+        </div>
+      )}
+
+      <div ref={scrollEndRef} />
+    </div>
+  );
+}
