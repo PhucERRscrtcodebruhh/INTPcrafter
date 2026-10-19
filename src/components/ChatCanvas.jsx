@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { ChevronDown, ChevronUp } from 'lucide-react';
 import MessageList from './MessageList';
+import ChatStream from './ChatStream';
 import BottomHUD from './BottomHUD';
 import LoreDrawer from './LoreDrawer';
 import SessionDrawer from './SessionDrawer';
@@ -134,7 +135,7 @@ export default function ChatCanvas({
     <div className="flex-1 flex flex-col h-full overflow-hidden relative bg-cyber-950 font-mono">
       {/* Upper Area: Main Chat View (Maximum Screen Space) */}
       <div className={`flex-1 flex flex-col overflow-hidden w-full ${isZenMode ? 'max-w-4xl mx-auto' : ''}`}>
-        <MessageList
+        <ChatStream
           messages={messages}
           isLoading={isLoading}
           isStreaming={isStreaming}
