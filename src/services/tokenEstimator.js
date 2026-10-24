@@ -241,6 +241,14 @@ export const GEMINI_MODEL_SPECS = {
     tag: '1M Ultra-Fast (newest)',
     description: 'Cost-efficient newest Lite release for high-frequency world simulation and fast drafting.'
   },
+  'gemini-3.1-pro-preview': {
+    name: 'Gemini 3.1 Pro (Preview)',
+    provider: 'gemini',
+    contextLimit: 1048576,
+    recommendedThreshold: 65536,
+    tag: '1M Deep Reasoning',
+    description: 'Complex causal reasoning, strict rule compliance, and research-level nuance.'
+  },
   'gemini-3.1-pro': {
     name: 'Gemini 3.1 Pro',
     provider: 'gemini',
@@ -248,6 +256,38 @@ export const GEMINI_MODEL_SPECS = {
     recommendedThreshold: 65536,
     tag: '1M Deep Reasoning',
     description: 'Complex causal reasoning, strict rule compliance, and research-level nuance.'
+  },
+  'gemini-3.1-flash-lite': {
+    name: 'Gemini 3.1 Flash-Lite',
+    provider: 'gemini',
+    contextLimit: 1048576,
+    recommendedThreshold: 32768,
+    tag: '1M Classic Lite',
+    description: 'High-speed lightweight 3.1 Flash-Lite model for fast turns.'
+  },
+  'gemini-2.5-pro': {
+    name: 'Gemini 2.5 Pro',
+    provider: 'gemini',
+    contextLimit: 1048576,
+    recommendedThreshold: 65536,
+    tag: '1M Legacy Pro',
+    description: 'Legacy Gemini 2.5 Pro with token-budgeted thinking support.'
+  },
+  'gemini-2.5-flash': {
+    name: 'Gemini 2.5 Flash',
+    provider: 'gemini',
+    contextLimit: 1048576,
+    recommendedThreshold: 65536,
+    tag: '1M Legacy Flash',
+    description: 'Legacy Gemini 2.5 Flash model for standard chat generation.'
+  },
+  'gemini-2.5-flash-lite': {
+    name: 'Gemini 2.5 Flash-Lite',
+    provider: 'gemini',
+    contextLimit: 1048576,
+    recommendedThreshold: 32768,
+    tag: '1M Legacy Lite',
+    description: 'Legacy Gemini 2.5 Flash-Lite model for high-speed lightweight turns.'
   },
   'gemini-omni-1.1-flash-preview': {
     name: 'Gemini Omni 1.1 Flash (Preview)',
@@ -510,7 +550,12 @@ export const MODEL_GROUPS = [
       'gemini-3.6-flash',
       'gemini-3.5-flash',
       'gemini-3.5-flash-lite',
+      'gemini-3.1-pro-preview',
       'gemini-3.1-pro',
+      'gemini-3.1-flash-lite',
+      'gemini-2.5-pro',
+      'gemini-2.5-flash',
+      'gemini-2.5-flash-lite',
     ],
   },
   {

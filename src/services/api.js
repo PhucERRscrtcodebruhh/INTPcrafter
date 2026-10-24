@@ -125,55 +125,85 @@ export const api = {
       const reader = response.body.getReader();
       const decoder = new TextDecoder('utf-8');
       let buffer = '';
+      let didFinishOrError = false;
+      let accumulatedChunks = '';
+
+      const processPart = (part) => {
+        const lines = part.split('\n');
+        let eventType = 'message';
+        const dataLines = [];
+
+        for (const line of lines) {
+          if (line.startsWith('event: ')) {
+            eventType = line.slice(7).trim();
+          } else if (line.startsWith('data: ')) {
+            dataLines.push(line.slice(6));
+          } else if (line === 'data:') {
+            dataLines.push('');
+          }
+        }
+
+        const eventData = dataLines.join('\n').trim();
+
+        if (eventData) {
+          try {
+            const parsed = JSON.parse(eventData);
+            if (eventType === 'rag' && onRag) {
+              onRag(parsed);
+            } else if (eventType === 'chunk') {
+              accumulatedChunks += (parsed.text || '');
+              if (onChunk) onChunk(parsed.text);
+            } else if (eventType === 'done') {
+              didFinishOrError = true;
+              if (onDone) onDone(parsed);
+            } else if (eventType === 'error') {
+              didFinishOrError = true;
+              const streamErr = new Error(parsed.error || 'Generation stream error');
+              streamErr.type = parsed.type || (parsed.status === 429 ? 'rate_limit' : 'server');
+              streamErr.code = parsed.code;
+              streamErr.status = parsed.status || 500;
+              streamErr.details = parsed.details;
+              streamErr.hasStreamStarted = parsed.hasStreamStarted;
+              streamErr.partialText = parsed.partialText;
+              if (onError) onError(streamErr);
+            }
+          } catch (e) {
+            console.warn('Failed to parse SSE event data:', e);
+          }
+        }
+      };
 
       while (true) {
         const { value, done } = await reader.read();
-        if (done) break;
+        if (done) {
+          buffer += decoder.decode();
+          if (buffer.trim()) {
+            const remainingParts = buffer.split('\n\n');
+            for (const part of remainingParts) {
+              if (part.trim()) processPart(part);
+            }
+          }
+          break;
+        }
 
         buffer += decoder.decode(value, { stream: true });
         const parts = buffer.split('\n\n');
         buffer = parts.pop() || '';
 
         for (const part of parts) {
-          const lines = part.split('\n');
-          let eventType = 'message';
-          const dataLines = [];
+          processPart(part);
+        }
+      }
 
-          for (const line of lines) {
-            if (line.startsWith('event: ')) {
-              eventType = line.slice(7).trim();
-            } else if (line.startsWith('data: ')) {
-              dataLines.push(line.slice(6));
-            } else if (line === 'data:') {
-              dataLines.push('');
-            }
-          }
-
-          const eventData = dataLines.join('\n').trim();
-
-          if (eventData) {
-            try {
-              const parsed = JSON.parse(eventData);
-              if (eventType === 'rag' && onRag) {
-                onRag(parsed);
-              } else if (eventType === 'chunk' && onChunk) {
-                onChunk(parsed.text);
-              } else if (eventType === 'done' && onDone) {
-                onDone(parsed);
-              } else if (eventType === 'error') {
-                const streamErr = new Error(parsed.error || 'Generation stream error');
-                streamErr.type = parsed.type || (parsed.status === 429 ? 'rate_limit' : 'server');
-                streamErr.code = parsed.code;
-                streamErr.status = parsed.status || 500;
-                streamErr.details = parsed.details;
-                streamErr.hasStreamStarted = parsed.hasStreamStarted;
-                streamErr.partialText = parsed.partialText;
-                if (onError) onError(streamErr);
-              }
-            } catch (e) {
-              console.warn('Failed to parse SSE event data:', e);
-            }
-          }
+      if (!didFinishOrError) {
+        if (accumulatedChunks.trim()) {
+          if (onDone) onDone({ fullReply: accumulatedChunks });
+        } else {
+          const cutErr = new Error('Stream connection closed unexpectedly (timeout or network interruption).');
+          cutErr.type = 'network';
+          cutErr.status = 504;
+          cutErr.code = 'NETWORK_TIMEOUT';
+          if (onError) onError(cutErr);
         }
       }
     } catch (err) {

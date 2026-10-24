@@ -5,9 +5,10 @@ import {
   encryptKey, 
   decryptKey, 
   getPoolForUser, 
+  invalidateUserPoolCache,
   GeminiKeyPool 
 } from './geminiPool.js';
-import { buildOpenAICompatiblePayload, resolveModelCapabilities } from './services/aiDispatcher.js';
+import { buildOpenAICompatiblePayload, resolveModelCapabilities, resolveGoogleModelId } from './services/aiDispatcher.js';
 
 export const PROVIDER_ENDPOINTS = {
   gemini: 'https://generativelanguage.googleapis.com',
@@ -39,6 +40,9 @@ export const GROQ_MODEL_IDS = new Set([
 // Map UI Model names to upstream API Model IDs
 export function resolveModelForProvider(modelName, provider = 'deepseek') {
   const m = (modelName || '').toLowerCase().trim();
+  if (provider === 'gemini' || provider === 'google') {
+    return resolveGoogleModelId(modelName);
+  }
   if (provider === 'groq') {
     // Groq IDs are canonical already; only strip an optional routing prefix.
     return String(modelName || '').replace(/^groq\//i, '').trim();
@@ -790,6 +794,7 @@ export async function dispatchStreamingGeneration({
   // Gemini is requested: execute on Gemini Key Pool
   const geminiPool = await getPoolForUser(userId);
   try {
+    const geminiTtftTimeout = (ttftTimeout && ttftTimeout < 60000) ? ttftTimeout : 55000;
     const result = await geminiPool.executeStreamWithFallback({
       model: requestedModel,
       contents,
@@ -797,7 +802,7 @@ export async function dispatchStreamingGeneration({
       generationConfig,
       onChunk: trackingOnChunk,
       streamTimeout,
-      ttftTimeout,
+      ttftTimeout: geminiTtftTimeout,
       singleKeyMode
     });
     return result;
@@ -992,6 +997,7 @@ export async function addUserMultiProviderKey(userId, rawKey, provider = 'deepse
     );
   }
 
+  invalidateUserPoolCache(uid);
   return await getUserMultiProviderKeys(uid, cleanProvider);
 }
 
@@ -1005,6 +1011,7 @@ export async function removeUserMultiProviderKey(userId, keyId) {
     await pool.query('DELETE FROM api_keys_vault WHERE id = ?', [targetId]);
   }
 
+  invalidateUserPoolCache(uid);
   return await getUserMultiProviderKeys(uid);
 }
 
@@ -1023,5 +1030,6 @@ export async function resetUserMultiProviderStatuses(userId, provider = null) {
       await pool.query(`UPDATE api_keys_vault SET status = 'active', rate_limited_until = NULL, error_msg = NULL`);
     }
   }
+  invalidateUserPoolCache(uid);
   return await getUserMultiProviderKeys(uid, provider);
 }

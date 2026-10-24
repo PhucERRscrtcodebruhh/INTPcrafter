@@ -38,13 +38,24 @@ const safeStorage = {
 };
 
 /**
+ * Default Google AI Studio Safety Settings
+ */
+export const DEFAULT_SAFETY_SETTINGS = [
+  { category: 'HARM_CATEGORY_HATE_SPEECH', threshold: 'BLOCK_NONE' },
+  { category: 'HARM_CATEGORY_HARASSMENT', threshold: 'BLOCK_NONE' },
+  { category: 'HARM_CATEGORY_SEXUALLY_EXPLICIT', threshold: 'BLOCK_NONE' },
+  { category: 'HARM_CATEGORY_DANGEROUS_CONTENT', threshold: 'BLOCK_NONE' },
+  { category: 'HARM_CATEGORY_CIVIC_INTEGRITY', threshold: 'BLOCK_NONE' },
+];
+
+/**
  * Default parameter state values matching specification
  */
 export const DEFAULT_PARAMETERS = {
   // Common Sampling
   temperature: 1.0, // default: 1.0 (range 0.0 - 2.0)
   topP: 0.95,       // default: 0.95 (range 0.0 - 1.0)
-  maxOutputTokens: 4096, // default: 4096
+  maxOutputTokens: 8192, // default: 8192 for Google AI Studio (or model max)
   maxContextTokens: 32768, // custom rolling pruner cap
   disableStreaming: false, // default: false
 
@@ -58,11 +69,13 @@ export const DEFAULT_PARAMETERS = {
   verbosity: 'none', // 'none' | 'concise' | 'detailed'
   useResponsesApi: false,
 
-  // Google GenAI Specific
-  topK: 40, // default: 40 (range 1 - 64)
+  // Google GenAI Specific (Google AI Studio Schema)
+  systemInstruction: '', // Dedicated System Instructions override / prompt
+  topK: 40, // default: 40 (range 1 - 100)
   thinkingEnabled: true, // default: true for reasoning models
-  thinkingBudget: -1, // -1 for auto, 0 for off, or int (e.g. 2048)
+  thinkingBudget: 2048, // 'auto' or integer (min 1024, default 2048)
   thinkingLevel: 'auto', // 'auto' | 'low' | 'medium' | 'high'
+  safetySettings: [...DEFAULT_SAFETY_SETTINGS],
   groundingWithGoogleSearch: false, // default: false
   urlContext: false, // default: false
   resendFiles: true, // default: true

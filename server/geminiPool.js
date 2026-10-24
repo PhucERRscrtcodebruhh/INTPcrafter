@@ -1,7 +1,12 @@
 import crypto from 'crypto';
 import { GoogleGenAI } from '@google/genai';
 import { pool } from './db.js';
-import { buildGoogleGenAIConfig, resolveModelCapabilities } from './services/aiDispatcher.js';
+import {
+  buildGoogleGenAIConfig,
+  resolveModelCapabilities,
+  resolveGoogleModelId,
+  transformToGoogleConfig
+} from './services/aiDispatcher.js';
 
 const CRYPTO_SECRET = process.env.CRYPTO_SECRET || 'intp_5w4_neuro_matrix_vault_secret_key_9999';
 
@@ -55,7 +60,7 @@ export class GeminiKeyPool {
       // 1. Try loading from secure api_keys_vault table
       let [vaultRows] = await pool.query(
         `SELECT id, key_hash, encrypted_key, masked_key, status, call_count, request_count, rate_limit_count, last_used_at, rate_limited_until, error_msg 
-         FROM api_keys_vault ORDER BY id ASC`
+         FROM api_keys_vault WHERE provider = 'gemini' OR provider IS NULL ORDER BY id ASC`
       );
 
       let keyList = [];
@@ -395,7 +400,7 @@ export class GeminiKeyPool {
     throw new Error(`ROTATION_EXHAUSTED: Failed after attempting all ${this.keys.length} available keys in pool.`);
   }
 
-  async executeStreamWithFallback({ model, contents, systemInstruction, generationConfig, onChunk, streamTimeout = 60000, ttftTimeout = 120000, singleKeyMode = false }) {
+  async executeStreamWithFallback({ model, contents, systemInstruction, generationConfig, onChunk, streamTimeout = 60000, ttftTimeout = 55000, singleKeyMode = false }) {
     await this.init();
     if (this.keys.length === 0) {
       throw new Error('NO_API_KEYS: No Gemini API keys configured in Key Pool. Please add keys in World Config Dashboard.');
@@ -451,23 +456,29 @@ export class GeminiKeyPool {
       try {
         rotationLogs.push(`Attempt ${attempts}: Streaming request via Key #${keyObj.id} (${keyObj.masked})`);
         
-        let targetModel = model || 'gemini-3.8-flash';
-        if (targetModel.startsWith('models/')) {
-          targetModel = targetModel.replace('models/', '');
-        }
+        const rawModel = model || 'gemini-3.8-flash';
+        const resolvedModel = resolveGoogleModelId(rawModel);
 
         const ai = new GoogleGenAI({ apiKey: keyObj.key });
-        const capabilities = resolveModelCapabilities('google', targetModel);
-        const config = buildGoogleGenAIConfig(generationConfig || {}, capabilities);
-        if (systemInstruction) {
-          config.systemInstruction = systemInstruction;
-        }
+        const effectiveSystemInstruction =
+          (generationConfig && generationConfig.systemInstruction && String(generationConfig.systemInstruction).trim())
+            ? generationConfig.systemInstruction
+            : systemInstruction;
 
-        // Bounded timeouts: allow fast unit tests (streamTimeout < 10000), otherwise enforce at least 60s chunk threshold and 120s TTFT
-        const chunkTimeoutMs = streamTimeout < 10000 ? streamTimeout : Math.max(streamTimeout, 60000);
+        const config = transformToGoogleConfig(
+          {
+            ...(generationConfig || {}),
+            model: rawModel,
+            systemInstruction: effectiveSystemInstruction,
+          },
+          resolvedModel
+        );
+
+        // Bounded timeouts: allow fast unit tests (streamTimeout < 10000), otherwise align ttftTimeoutMs = 55000 (55s) before Vercel 60s maxDuration limit
+        const chunkTimeoutMs = streamTimeout < 10000 ? streamTimeout : Math.max(streamTimeout, 55000);
         const ttftTimeoutMs = (ttftTimeout && ttftTimeout < 10000)
           ? ttftTimeout
-          : (streamTimeout < 10000 ? streamTimeout : Math.max(ttftTimeout || 120000, 120000));
+          : (streamTimeout < 10000 ? streamTimeout : 55000);
 
         let ttftTimerId;
         const ttftTimeoutPromise = new Promise((_, reject) => {
@@ -483,7 +494,7 @@ export class GeminiKeyPool {
         try {
           responseStream = await Promise.race([
             ai.models.generateContentStream({
-              model: targetModel,
+              model: resolvedModel,
               contents,
               config
             }),
@@ -555,7 +566,7 @@ export class GeminiKeyPool {
           text: fullText,
           finishReason,
           usageMetadata,
-          model: targetModel,
+          model: resolvedModel,
           keyUsed: { id: keyObj.id, masked: keyObj.masked },
           rotationLogs
         };
@@ -617,22 +628,26 @@ export class GeminiKeyPool {
   }
 
   async callGeminiApi({ apiKey, model, contents, systemInstruction, generationConfig }) {
-    // Normalise model identifier
-    let targetModel = model || 'gemini-3.8-flash';
-    if (targetModel.startsWith('models/')) {
-      targetModel = targetModel.replace('models/', '');
-    }
+    const rawModel = model || 'gemini-3.8-flash';
+    const resolvedModel = resolveGoogleModelId(rawModel);
 
     const ai = new GoogleGenAI({ apiKey });
-    const capabilities = resolveModelCapabilities('google', targetModel);
-    const config = buildGoogleGenAIConfig(generationConfig || {}, capabilities);
+    const effectiveSystemInstruction =
+      (generationConfig && generationConfig.systemInstruction && String(generationConfig.systemInstruction).trim())
+        ? generationConfig.systemInstruction
+        : systemInstruction;
 
-    if (systemInstruction) {
-      config.systemInstruction = systemInstruction;
-    }
+    const config = transformToGoogleConfig(
+      {
+        ...(generationConfig || {}),
+        model: rawModel,
+        systemInstruction: effectiveSystemInstruction,
+      },
+      resolvedModel
+    );
 
     const response = await ai.models.generateContent({
-      model: targetModel,
+      model: resolvedModel,
       contents,
       config
     });
@@ -645,7 +660,7 @@ export class GeminiKeyPool {
       text,
       finishReason,
       usageMetadata,
-      model: targetModel
+      model: resolvedModel
     };
   }
 
@@ -653,12 +668,13 @@ export class GeminiKeyPool {
     if (!key) throw new Error('Key cannot be empty');
     try {
       const ai = new GoogleGenAI({ apiKey: key });
+      const testModel = resolveGoogleModelId('gemini-2.5-flash');
       const response = await ai.models.generateContent({
-        model: 'gemini-3.5-flash-lite',
+        model: testModel,
         contents: 'Ping. Respond with single word "PONG".',
         config: { maxOutputTokens: 10 }
       });
-      return { success: true, response: (response.text || 'PONG').trim(), model: 'gemini-3.5-flash-lite' };
+      return { success: true, response: (response.text || 'PONG').trim(), model: testModel };
     } catch (err) {
       return { success: false, error: err.message, status: err.status || 500 };
     }
@@ -672,6 +688,14 @@ export class GeminiKeyPool {
 // In-memory cache: userId -> { pool, lastAccess }
 const userPoolCache = new Map();
 const POOL_CACHE_TTL = 5 * 60 * 1000; // 5 minutes
+
+export function invalidateUserPoolCache(userId = null) {
+  if (userId === null || userId === undefined) {
+    userPoolCache.clear();
+  } else {
+    userPoolCache.delete(parseInt(userId, 10) || 0);
+  }
+}
 
 /**
  * Factory: Get a GeminiKeyPool for a specific user.
@@ -696,11 +720,11 @@ export async function getPoolForUser(userId) {
     // Dev/legacy: load from global api_keys_vault
     await userPool.init();
   } else {
-    // Registered user: load from user_api_keys
+    // Registered user: load strictly Gemini keys from user_api_keys
     try {
       const [rows] = await pool.query(
         `SELECT id, key_hash, encrypted_key, masked_key, status, call_count, request_count, rate_limit_count, last_used_at, rate_limited_until, error_msg 
-         FROM user_api_keys WHERE user_id = ? ORDER BY id ASC`,
+         FROM user_api_keys WHERE user_id = ? AND (provider = 'gemini' OR provider IS NULL) ORDER BY id ASC`,
         [uid]
       );
 

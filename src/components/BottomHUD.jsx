@@ -22,6 +22,7 @@ import MobileContextBubbleTrigger from './chat/MobileContextBubbleTrigger';
 import MobileContextDrawer from './chat/MobileContextDrawer';
 import MobileFloatingSendBubble from './MobileFloatingSendBubble';
 import { MODEL_SPECS, MODEL_GROUPS, formatTokenCount, getModelSpec } from '../services/tokenEstimator';
+import { resolveModelCapabilities } from '../config/modelRegistry';
 
 // Accent tokens for the grouped model picker (Tailwind classes must be literal).
 const MODEL_ACCENTS = {
@@ -322,7 +323,7 @@ export default function BottomHUD({
                     <input
                       type="range"
                       min="0.0"
-                      max="1.5"
+                      max="2.0"
                       step="0.05"
                       value={temperature}
                       onChange={(e) => setTemperature(parseFloat(e.target.value))}
@@ -330,7 +331,7 @@ export default function BottomHUD({
                     />
                     <div className="flex justify-between text-[10px] text-slate-600">
                       <span>0.0 (Logic)</span>
-                      <span>1.5 (Creative)</span>
+                      <span>2.0 (Creative)</span>
                     </div>
                   </div>
 
@@ -342,7 +343,7 @@ export default function BottomHUD({
                     </div>
                     <input
                       type="range"
-                      min="0.1"
+                      min="0.0"
                       max="1.0"
                       step="0.05"
                       value={topP}
@@ -350,31 +351,36 @@ export default function BottomHUD({
                       className="w-full h-1.5 bg-cyber-900 rounded-lg appearance-none cursor-pointer accent-cyan-400"
                     />
                     <div className="flex justify-between text-[10px] text-slate-600">
-                      <span>0.1 (Focused)</span>
+                      <span>0.0 (Focused)</span>
                       <span>1.0 (Diverse)</span>
                     </div>
                   </div>
 
                   {/* Max Output Tokens */}
-                  <div className="space-y-1">
-                    <div className="flex justify-between text-slate-400">
-                      <span>Max Tokens:</span>
-                      <span className="text-cyan-300 font-bold">{maxOutputTokens}</span>
-                    </div>
-                    <input
-                      type="range"
-                      min="512"
-                      max="8192"
-                      step="256"
-                      value={maxOutputTokens}
-                      onChange={(e) => setMaxOutputTokens(parseInt(e.target.value, 10))}
-                      className="w-full h-1.5 bg-cyber-900 rounded-lg appearance-none cursor-pointer accent-cyan-400"
-                    />
-                    <div className="flex justify-between text-[10px] text-slate-600">
-                      <span>512</span>
-                      <span>8,192</span>
-                    </div>
-                  </div>
+                  {(() => {
+                    const maxCap = resolveModelCapabilities(currentSpec?.provider || 'gemini', model).maxOutputTokensCap || 8192;
+                    return (
+                      <div className="space-y-1">
+                        <div className="flex justify-between text-slate-400">
+                          <span>Max Tokens:</span>
+                          <span className="text-cyan-300 font-bold">{maxOutputTokens?.toLocaleString?.() || maxOutputTokens}</span>
+                        </div>
+                        <input
+                          type="range"
+                          min="512"
+                          max={maxCap}
+                          step="256"
+                          value={Math.min(maxOutputTokens || 8192, maxCap)}
+                          onChange={(e) => setMaxOutputTokens(parseInt(e.target.value, 10))}
+                          className="w-full h-1.5 bg-cyber-900 rounded-lg appearance-none cursor-pointer accent-cyan-400"
+                        />
+                        <div className="flex justify-between text-[10px] text-slate-600">
+                          <span>512</span>
+                          <span>{maxCap.toLocaleString()}</span>
+                        </div>
+                      </div>
+                    );
+                  })()}
 
                   {/* Cockpit Deep Tuning Action Button */}
                   <div className="col-span-1 sm:col-span-3 pt-2 border-t border-cyan-500/20 flex flex-wrap items-center justify-between gap-2">

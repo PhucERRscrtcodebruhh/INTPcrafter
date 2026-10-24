@@ -1,11 +1,17 @@
 export const MODEL_CONTEXT_LIMITS = {
   // Gemini Flagship Series
+  'gemini-4-argon-cyber-permissive': 1048576,
+  'gemini-4-argon': 1048576,
   'gemini-3.8-flash': 1048576,
   'gemini-3.7-flash': 1048576,
   'gemini-3.6-flash': 1048576,
   'gemini-3.5-flash-lite': 1048576,
+  'gemini-3.5-flash': 1048576,
+  'gemini-3.1-pro-preview': 1048576,
   'gemini-3.1-pro': 1048576,
-  'gemini-2.5-pro': 2097152,
+  'gemini-3.1-flash-lite': 1048576,
+  'gemini-2.5-pro': 1048576,
+  'gemini-2.5-flash-lite': 1048576,
   'gemini-2.5-flash': 1048576,
   'gemma-4-31b-it': 131072,
   'gemma-4-26b-a4b-it': 131072,

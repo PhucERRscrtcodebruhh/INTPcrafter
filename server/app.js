@@ -728,10 +728,15 @@ function extractModelParameters(body = {}) {
     useResponsesApi: Boolean(mp.useResponsesApi ?? body.useResponsesApi ?? false),
 
     // Google GenAI Specific
+    systemInstruction: mp.systemInstruction !== undefined ? mp.systemInstruction : body.systemInstruction,
     topK: mp.topK !== undefined ? parseInt(mp.topK, 10) : (body.topK !== undefined ? parseInt(body.topK, 10) : 40),
     thinkingEnabled: mp.thinkingEnabled !== undefined ? Boolean(mp.thinkingEnabled) : (body.thinkingEnabled !== undefined ? Boolean(body.thinkingEnabled) : true),
-    thinkingBudget: mp.thinkingBudget !== undefined ? parseInt(mp.thinkingBudget, 10) : (body.thinkingBudget !== undefined ? parseInt(body.thinkingBudget, 10) : -1),
+    thinkingBudget: mp.thinkingBudget !== undefined ? mp.thinkingBudget : (body.thinkingBudget !== undefined ? body.thinkingBudget : 2048),
     thinkingLevel: mp.thinkingLevel || body.thinkingLevel || 'auto',
+    safetySettings: Array.isArray(mp.safetySettings) ? mp.safetySettings : (Array.isArray(body.safetySettings) ? body.safetySettings : undefined),
+    seed: mp.seed !== undefined ? parseInt(mp.seed, 10) : (body.seed !== undefined ? parseInt(body.seed, 10) : undefined),
+    responseMimeType: mp.responseMimeType || body.responseMimeType || undefined,
+    responseSchema: mp.responseSchema || body.responseSchema || undefined,
     groundingWithGoogleSearch: Boolean(mp.groundingWithGoogleSearch ?? body.groundingWithGoogleSearch ?? false),
     urlContext: Boolean(mp.urlContext ?? body.urlContext ?? false),
     resendFiles: Boolean(mp.resendFiles ?? body.resendFiles ?? true),
