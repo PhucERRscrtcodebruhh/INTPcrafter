@@ -358,7 +358,7 @@ export default function BottomHUD({
 
                   {/* Max Output Tokens */}
                   {(() => {
-                    const maxCap = resolveModelCapabilities(currentSpec?.provider || 'gemini', model).maxOutputTokensCap || 8192;
+                    const maxCap = resolveModelCapabilities(spec?.provider || 'gemini', model).maxOutputTokensCap || 8192;
                     return (
                       <div className="space-y-1">
                         <div className="flex justify-between text-slate-400">
