@@ -6,7 +6,6 @@ import {
   Sliders, 
   Cpu, 
   Layers, 
-  Search, 
   Globe, 
   Sparkles, 
   Trash2, 
@@ -14,7 +13,6 @@ import {
   Tag, 
   Plus, 
   ShieldAlert,
-  SlidersHorizontal,
   Zap,
   Info
 } from 'lucide-react';
@@ -46,7 +44,6 @@ export default function ParameterSettingsModal({
   const {
     parameters,
     updateParameter,
-    updateParameters,
     resetToDefaults,
     activePreset,
     customPresets,
@@ -74,6 +71,30 @@ export default function ParameterSettingsModal({
 
   const schema = resolveModelCapabilities(provider, model);
   const maxOutputCap = schema.maxOutputTokensCap || 16384;
+  const isGoogle = schema.provider === 'google';
+  const supportsGoogleThinking = isGoogle && schema.reasoningType !== 'none';
+
+  // Getters that fallback gracefully between OpenAI and Google keys
+  const getTemperature = () => parameters.temperature ?? (isGoogle ? 1.0 : 0.7);
+  const getTopP = () => isGoogle
+    ? (parameters.topP ?? 0.95)
+    : (parameters.top_p ?? parameters.topP ?? 0.95);
+  const getMaxTokens = () => isGoogle
+    ? (parameters.maxOutputTokens || 8192)
+    : (parameters.max_completion_tokens || parameters.max_tokens || parameters.maxOutputTokens || 2048);
+  const getPresencePenalty = () => Number(parameters.presence_penalty ?? parameters.presencePenalty ?? 0.0);
+  const getFrequencyPenalty = () => Number(parameters.frequency_penalty ?? parameters.frequencyPenalty ?? 0.0);
+
+  const handleParamChange = (key, value) => {
+    if (!isGoogle) {
+      // Map to standard OpenAI payload layout properties
+      if (key === 'maxOutputTokens') key = 'max_completion_tokens';
+      if (key === 'topP') key = 'top_p';
+      if (key === 'presencePenalty') key = 'presence_penalty';
+      if (key === 'frequencyPenalty') key = 'frequency_penalty';
+    }
+    updateParameter(key, value);
+  };
 
   const handleAddStopSequence = (e) => {
     e?.preventDefault();
@@ -110,15 +131,13 @@ export default function ParameterSettingsModal({
   };
 
   const handleSafetyChange = (category, threshold) => {
+    if (!isGoogle) return;
     const updated = GOOGLE_SAFETY_CATEGORIES.map((cat) => ({
       category: cat.id,
       threshold: cat.id === category ? threshold : getSafetyThreshold(cat.id),
     }));
     updateParameter('safetySettings', updated);
   };
-
-  const isGoogle = schema.provider === 'google';
-  const supportsGoogleThinking = isGoogle && schema.reasoningType !== 'none';
 
   // Stepped slider mapping for Thinking Level (Gemini 4 Argon & Gemini 3.x)
   const thinkingLevels = ['minimal', 'low', 'medium', 'high'];
@@ -127,9 +146,15 @@ export default function ParameterSettingsModal({
     : (schema.thinkingDefault || 'medium');
   const currentLevelIndex = thinkingLevels.indexOf(effectiveThinkingLevel);
 
-  // Stepped slider mapping for Reasoning Effort
+  // Stepped slider mapping for Reasoning Effort (OpenAI / DeepSeek)
   const reasoningEfforts = ['auto', 'low', 'medium', 'high'];
   const currentEffortIndex = reasoningEfforts.indexOf(parameters.reasoningEffort || 'auto');
+
+  const currentTemp = Number(getTemperature());
+  const currentTopP = Number(getTopP());
+  const currentMaxTokens = Number(getMaxTokens());
+  const currentPresencePenalty = getPresencePenalty();
+  const currentFrequencyPenalty = getFrequencyPenalty();
 
   return (
     <div 
@@ -152,7 +177,7 @@ export default function ParameterSettingsModal({
                   LLM Parameter Cockpit
                 </h2>
                 <span className="text-[10px] px-2 py-0.5 rounded-full bg-cyan-950/80 border border-[#00f0ff]/40 text-[#00f0ff] font-bold">
-                  {schema.provider === 'google' ? 'Google GenAI' : 'OpenAI Compatible'}
+                  {isGoogle ? 'Google GenAI' : 'OpenAI Compatible'}
                 </span>
               </div>
               <p className="text-[11px] text-slate-400 font-sans flex items-center gap-1.5 mt-0.5">
@@ -263,7 +288,7 @@ export default function ParameterSettingsModal({
         {/* Scrollable Cockpit Content */}
         <div className="flex-1 overflow-y-auto p-4 space-y-6 text-xs">
 
-          {/* GOOGLE AI STUDIO: SYSTEM INSTRUCTIONS (Top Prominent Section) */}
+          {/* GOOGLE AI STUDIO: SYSTEM INSTRUCTIONS (Strictly isolated to isGoogle) */}
           {isGoogle && (
             <div className="space-y-2.5 bg-slate-950/60 p-4 rounded-xl border border-cyan-500/30">
               <div className="flex items-center justify-between border-b border-slate-800/80 pb-2">
@@ -280,31 +305,35 @@ export default function ParameterSettingsModal({
                 rows={4}
                 placeholder="Optional tone and style instructions for the model (maps directly to config.systemInstruction)..."
                 value={parameters.systemInstruction || ''}
-                onChange={(e) => updateParameter('systemInstruction', e.target.value)}
+                onChange={(e) => handleParamChange('systemInstruction', e.target.value)}
                 className="w-full bg-slate-900/90 border border-slate-700/80 rounded-lg p-2.5 text-xs text-slate-200 placeholder-slate-500 focus:outline-none focus:border-[#00f0ff] resize-y font-sans leading-relaxed"
               />
             </div>
           )}
           
-          {/* SECTION 1: SAMPLING CONTROLS */}
+          {/* SECTION 1: SAMPLING & HYPERPARAMETERS */}
           <div className="space-y-3.5 bg-slate-950/60 p-4 rounded-xl border border-slate-800/80">
             <div className="flex items-center justify-between border-b border-slate-800/80 pb-2">
               <div className="flex items-center space-x-2 text-[#00f0ff]">
                 <Zap size={15} />
                 <span className="font-bold uppercase tracking-wider text-slate-200">
-                  1. Sampling & Diversity
+                  1. {isGoogle ? 'Sampling & Diversity (Google AI Studio)' : 'OpenAI Hyperparameters'}
                 </span>
               </div>
-              <span className="text-[10px] text-slate-500">{isGoogle ? 'Google AI Studio' : 'Universal Entropy'}</span>
+              <span className="text-[10px] text-slate-500">
+                {isGoogle ? '@google/genai Schema' : 'OpenAI Chat Completions Schema'}
+              </span>
             </div>
 
             <div className="grid grid-cols-1 md:grid-cols-2 gap-4 pt-1">
-              {/* Temperature Slider */}
+              {/* Temperature Slider (0.0 to 2.0) */}
               <div className="space-y-1.5">
                 <div className="flex justify-between items-center text-slate-300">
-                  <span className="font-semibold">Temperature:</span>
+                  <span className="font-semibold">
+                    {isGoogle ? 'Temperature:' : 'temperature:'}
+                  </span>
                   <span className="text-[#00f0ff] font-bold px-1.5 py-0.2 rounded bg-cyan-950/80 border border-cyan-500/30">
-                    {Number(parameters.temperature ?? 1.0).toFixed(2)}
+                    {currentTemp.toFixed(2)}
                   </span>
                 </div>
                 <input
@@ -312,23 +341,25 @@ export default function ParameterSettingsModal({
                   min="0.0"
                   max="2.0"
                   step="0.05"
-                  value={parameters.temperature ?? 1.0}
-                  onChange={(e) => updateParameter('temperature', parseFloat(e.target.value))}
+                  value={currentTemp}
+                  onChange={(e) => handleParamChange('temperature', parseFloat(e.target.value))}
                   className="w-full h-1.5 bg-slate-800 rounded-lg appearance-none cursor-pointer accent-[#00f0ff]"
                 />
                 <div className="flex justify-between text-[10px] text-slate-500">
                   <span>0.0 (Deterministic)</span>
-                  <span>1.0 (Default)</span>
+                  <span>{isGoogle ? '1.0 (Default)' : '0.7 (Default)'}</span>
                   <span>2.0 (High Chaos)</span>
                 </div>
               </div>
 
-              {/* Top P Slider */}
+              {/* Top P / top_p Slider (0.0 to 1.0) */}
               <div className="space-y-1.5">
                 <div className="flex justify-between items-center text-slate-300">
-                  <span className="font-semibold">Top P (Nucleus):</span>
+                  <span className="font-semibold">
+                    {isGoogle ? 'Top P (Nucleus):' : 'top_p (Nucleus):'}
+                  </span>
                   <span className="text-[#00f0ff] font-bold px-1.5 py-0.2 rounded bg-cyan-950/80 border border-cyan-500/30">
-                    {Number(parameters.topP ?? 0.95).toFixed(2)}
+                    {currentTopP.toFixed(2)}
                   </span>
                 </div>
                 <input
@@ -336,8 +367,8 @@ export default function ParameterSettingsModal({
                   min="0.0"
                   max="1.0"
                   step="0.01"
-                  value={parameters.topP ?? 0.95}
-                  onChange={(e) => updateParameter('topP', parseFloat(e.target.value))}
+                  value={currentTopP}
+                  onChange={(e) => handleParamChange('topP', parseFloat(e.target.value))}
                   className="w-full h-1.5 bg-slate-800 rounded-lg appearance-none cursor-pointer accent-[#00f0ff]"
                 />
                 <div className="flex justify-between text-[10px] text-slate-500">
@@ -347,8 +378,8 @@ export default function ParameterSettingsModal({
                 </div>
               </div>
 
-              {/* Conditional Top K for Google (1 to 100) */}
-              {schema.supportsTopK && (
+              {/* Conditional Top K for Google Only (1 to 100) */}
+              {isGoogle && (
                 <div className="space-y-1.5">
                   <div className="flex justify-between items-center text-slate-300">
                     <span className="font-semibold">Top K (Google GenAI):</span>
@@ -362,7 +393,7 @@ export default function ParameterSettingsModal({
                     max="100"
                     step="1"
                     value={parameters.topK ?? 40}
-                    onChange={(e) => updateParameter('topK', parseInt(e.target.value, 10))}
+                    onChange={(e) => handleParamChange('topK', parseInt(e.target.value, 10))}
                     className="w-full h-1.5 bg-slate-800 rounded-lg appearance-none cursor-pointer accent-[#00f0ff]"
                   />
                   <div className="flex justify-between text-[10px] text-slate-500">
@@ -373,52 +404,74 @@ export default function ParameterSettingsModal({
                 </div>
               )}
 
-              {/* Conditional Penalties for OpenAI Compatible */}
-              {schema.supportsPenalties && (
+              {/* Conditional Penalties for OpenAI Compatible Only (presence_penalty & frequency_penalty) */}
+              {!isGoogle && (
                 <>
                   <div className="space-y-1.5">
                     <div className="flex justify-between items-center text-slate-300">
-                      <span className="font-semibold">Frequency Penalty:</span>
-                      <span className="text-amber-400 font-bold px-1.5 py-0.2 rounded bg-amber-950/80 border border-amber-500/30">
-                        {parameters.frequencyPenalty.toFixed(1)}
-                      </span>
+                      <span className="font-semibold">presence_penalty:</span>
+                      <input
+                        type="number"
+                        min="-2.0"
+                        max="2.0"
+                        step="0.1"
+                        value={currentPresencePenalty}
+                        onChange={(e) => {
+                          const val = parseFloat(e.target.value);
+                          if (!Number.isNaN(val)) {
+                            handleParamChange('presencePenalty', Math.min(2.0, Math.max(-2.0, val)));
+                          }
+                        }}
+                        className="w-20 bg-slate-900 border border-amber-500/40 rounded px-1.5 py-0.5 text-right text-amber-400 font-bold focus:outline-none"
+                      />
                     </div>
                     <input
                       type="range"
                       min="-2.0"
                       max="2.0"
                       step="0.1"
-                      value={parameters.frequencyPenalty}
-                      onChange={(e) => updateParameter('frequencyPenalty', parseFloat(e.target.value))}
-                      className="w-full h-1.5 bg-slate-800 rounded-lg appearance-none cursor-pointer accent-amber-400"
-                    />
-                    <div className="flex justify-between text-[10px] text-slate-500">
-                      <span>-2.0</span>
-                      <span>0.0 (Neutral)</span>
-                      <span>+2.0 (Reduce repetition)</span>
-                    </div>
-                  </div>
-
-                  <div className="space-y-1.5">
-                    <div className="flex justify-between items-center text-slate-300">
-                      <span className="font-semibold">Presence Penalty:</span>
-                      <span className="text-amber-400 font-bold px-1.5 py-0.2 rounded bg-amber-950/80 border border-amber-500/30">
-                        {parameters.presencePenalty.toFixed(1)}
-                      </span>
-                    </div>
-                    <input
-                      type="range"
-                      min="-2.0"
-                      max="2.0"
-                      step="0.1"
-                      value={parameters.presencePenalty}
-                      onChange={(e) => updateParameter('presencePenalty', parseFloat(e.target.value))}
+                      value={currentPresencePenalty}
+                      onChange={(e) => handleParamChange('presencePenalty', parseFloat(e.target.value))}
                       className="w-full h-1.5 bg-slate-800 rounded-lg appearance-none cursor-pointer accent-amber-400"
                     />
                     <div className="flex justify-between text-[10px] text-slate-500">
                       <span>-2.0</span>
                       <span>0.0 (Neutral)</span>
                       <span>+2.0 (Encourage new topics)</span>
+                    </div>
+                  </div>
+
+                  <div className="space-y-1.5">
+                    <div className="flex justify-between items-center text-slate-300">
+                      <span className="font-semibold">frequency_penalty:</span>
+                      <input
+                        type="number"
+                        min="-2.0"
+                        max="2.0"
+                        step="0.1"
+                        value={currentFrequencyPenalty}
+                        onChange={(e) => {
+                          const val = parseFloat(e.target.value);
+                          if (!Number.isNaN(val)) {
+                            handleParamChange('frequencyPenalty', Math.min(2.0, Math.max(-2.0, val)));
+                          }
+                        }}
+                        className="w-20 bg-slate-900 border border-amber-500/40 rounded px-1.5 py-0.5 text-right text-amber-400 font-bold focus:outline-none"
+                      />
+                    </div>
+                    <input
+                      type="range"
+                      min="-2.0"
+                      max="2.0"
+                      step="0.1"
+                      value={currentFrequencyPenalty}
+                      onChange={(e) => handleParamChange('frequencyPenalty', parseFloat(e.target.value))}
+                      className="w-full h-1.5 bg-slate-800 rounded-lg appearance-none cursor-pointer accent-amber-400"
+                    />
+                    <div className="flex justify-between text-[10px] text-slate-500">
+                      <span>-2.0</span>
+                      <span>0.0 (Neutral)</span>
+                      <span>+2.0 (Reduce repetition)</span>
                     </div>
                   </div>
                 </>
@@ -439,19 +492,21 @@ export default function ParameterSettingsModal({
             </div>
 
             <div className="grid grid-cols-1 md:grid-cols-2 gap-4 pt-1">
-              {/* Max Output Tokens */}
+              {/* maxOutputTokens (Google) vs max_completion_tokens (OpenAI) */}
               <div className="space-y-1.5">
                 <div className="flex justify-between items-center text-slate-300">
-                  <span className="font-semibold">Max Output Tokens:</span>
+                  <span className="font-semibold">
+                    {isGoogle ? 'Max Output Tokens:' : 'max_completion_tokens:'}
+                  </span>
                   <input
                     type="number"
                     min="256"
                     max={maxOutputCap}
                     step="256"
-                    value={parameters.maxOutputTokens}
+                    value={currentMaxTokens}
                     onChange={(e) => {
                       const val = parseInt(e.target.value, 10) || 256;
-                      updateParameter('maxOutputTokens', Math.min(val, maxOutputCap));
+                      handleParamChange('maxOutputTokens', Math.min(val, maxOutputCap));
                     }}
                     className="w-24 bg-slate-900 border border-cyan-500/30 rounded px-1.5 py-0.5 text-right text-cyan-300 font-bold focus:outline-none"
                   />
@@ -461,13 +516,13 @@ export default function ParameterSettingsModal({
                   min="256"
                   max={maxOutputCap}
                   step="256"
-                  value={parameters.maxOutputTokens}
-                  onChange={(e) => updateParameter('maxOutputTokens', parseInt(e.target.value, 10))}
+                  value={Math.min(currentMaxTokens, maxOutputCap)}
+                  onChange={(e) => handleParamChange('maxOutputTokens', parseInt(e.target.value, 10))}
                   className="w-full h-1.5 bg-slate-800 rounded-lg appearance-none cursor-pointer accent-[#00f0ff]"
                 />
                 <div className="flex justify-between text-[10px] text-slate-500">
                   <span>256</span>
-                  <span>4,096</span>
+                  <span>{isGoogle ? '8,192' : '2,048'}</span>
                   <span>{maxOutputCap.toLocaleString()}</span>
                 </div>
               </div>
@@ -500,7 +555,7 @@ export default function ParameterSettingsModal({
             {/* Stop Sequences Tag Input */}
             <div className="space-y-2 pt-2 border-t border-slate-800/80">
               <label className="text-xs font-semibold text-slate-300 block">
-                Stop Sequences (Generation terminates on encounter):
+                {isGoogle ? 'Stop Sequences (config.stopSequences):' : 'Stop Sequences (payload.stop):'}
               </label>
               
               <div className="flex flex-wrap gap-1.5 mb-2 min-h-[28px]">
@@ -551,144 +606,165 @@ export default function ParameterSettingsModal({
             </div>
           </div>
 
-          {/* SECTION 3: REASONING & EXTENDED THINKING */}
-          <div className="space-y-3.5 bg-slate-950/60 p-4 rounded-xl border border-slate-800/80">
-            <div className="flex items-center justify-between border-b border-slate-800/80 pb-2">
-              <div className="flex items-center space-x-2 text-[#00f0ff]">
-                <Cpu size={15} />
-                <span className="font-bold uppercase tracking-wider text-slate-200">
-                  3. {isGoogle ? 'Thinking Config (Google AI Studio)' : 'Reasoning & Extended Thinking'}
+          {/* SECTION 3 (GOOGLE ONLY): THINKING CONFIG (Strictly wrapped in isGoogle guard) */}
+          {isGoogle && (
+            <div className="thinking-config space-y-3.5 bg-slate-950/60 p-4 rounded-xl border border-slate-800/80">
+              <div className="flex items-center justify-between border-b border-slate-800/80 pb-2">
+                <div className="flex items-center space-x-2 text-[#00f0ff]">
+                  <Cpu size={15} />
+                  <span className="font-bold uppercase tracking-wider text-slate-200">
+                    3. Thinking Config (Google AI Studio)
+                  </span>
+                </div>
+                <span className="text-[10px] text-cyan-400 font-mono">
+                  Type: {schema.reasoningType}
                 </span>
               </div>
-              <span className="text-[10px] text-cyan-400 font-mono">
-                Type: {schema.reasoningType}
-              </span>
-            </div>
 
-            {/* Google AI Studio Thinking Config (Gemini 4 Argon / Gemini 3.8+ / Legacy 2.5 Pro) */}
-            {supportsGoogleThinking && (
-              <div className="space-y-3 pt-1">
-                <div className="flex items-center justify-between p-2.5 rounded-lg bg-cyan-950/30 border border-cyan-500/20">
-                  <div>
-                    <span className="font-semibold text-slate-200 block">Thinking</span>
-                    <span className="text-[10px] text-slate-400">
-                      {schema.reasoningType === 'google-level'
-                        ? 'Enable Gemini 3/4 reasoning effort (thinkingLevel — purges sampling keys when active)'
-                        : 'Enable legacy Gemini 2.5 Pro token-budgeted reasoning (thinkingBudget)'}
-                    </span>
-                  </div>
-                  <label className="relative inline-flex items-center cursor-pointer">
-                    <input
-                      type="checkbox"
-                      checked={Boolean(parameters.thinkingEnabled)}
-                      onChange={(e) => updateParameter('thinkingEnabled', e.target.checked)}
-                      className="sr-only peer"
-                    />
-                    <div className="w-11 h-6 bg-slate-800 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-slate-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-[#00f0ff]"></div>
-                  </label>
-                </div>
-
-                {parameters.thinkingEnabled && schema.reasoningType === 'google-level' && (
-                  <div className="space-y-2.5 p-3 rounded-lg bg-slate-900/70 border border-slate-800">
-                    <div className="flex justify-between items-center text-slate-300">
-                      <span className="font-semibold">Thinking Level (thinkingConfig.thinkingLevel):</span>
-                      <span className="text-[#00f0ff] uppercase font-bold px-2 py-0.5 rounded bg-cyan-950 border border-cyan-500/40">
-                        {effectiveThinkingLevel.toUpperCase()}
+              {supportsGoogleThinking ? (
+                <div className="space-y-3 pt-1">
+                  <div className="flex items-center justify-between p-2.5 rounded-lg bg-cyan-950/30 border border-cyan-500/20">
+                    <div>
+                      <span className="font-semibold text-slate-200 block">Thinking</span>
+                      <span className="text-[10px] text-slate-400">
+                        {schema.reasoningType === 'google-level'
+                          ? 'Enable Gemini 3/4 reasoning effort (thinkingLevel — purges sampling keys when active)'
+                          : 'Enable legacy Gemini 2.5 Pro token-budgeted reasoning (thinkingBudget)'}
                       </span>
                     </div>
-
-                    <input
-                      type="range"
-                      min="0"
-                      max="3"
-                      step="1"
-                      value={currentLevelIndex >= 0 ? currentLevelIndex : 2}
-                      onChange={(e) => updateParameter('thinkingLevel', thinkingLevels[parseInt(e.target.value, 10)])}
-                      className="w-full h-1.5 bg-slate-800 rounded-lg appearance-none cursor-pointer accent-[#00f0ff]"
-                    />
-
-                    <div className="flex justify-between text-[10px] text-slate-400 font-semibold pt-1 gap-1.5">
-                      {thinkingLevels.map((lvl) => (
-                        <button
-                          key={lvl}
-                          type="button"
-                          onClick={() => updateParameter('thinkingLevel', lvl)}
-                          className={`flex-1 uppercase px-2 py-1 rounded transition-colors ${
-                            effectiveThinkingLevel === lvl
-                              ? 'text-[#00f0ff] bg-cyan-950 border border-cyan-500/40 font-bold'
-                              : 'text-slate-500 bg-slate-950/60 border border-slate-800 hover:text-slate-300'
-                          }`}
-                        >
-                          {lvl}
-                        </button>
-                      ))}
-                    </div>
+                    <label className="relative inline-flex items-center cursor-pointer">
+                      <input
+                        type="checkbox"
+                        checked={Boolean(parameters.thinkingEnabled)}
+                        onChange={(e) => handleParamChange('thinkingEnabled', e.target.checked)}
+                        className="sr-only peer"
+                      />
+                      <div className="w-11 h-6 bg-slate-800 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-slate-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-[#00f0ff]"></div>
+                    </label>
                   </div>
-                )}
 
-                {parameters.thinkingEnabled && schema.reasoningType === 'google-budget' && (
-                  <div className="space-y-3 p-3 rounded-lg bg-slate-900/70 border border-slate-800">
-                    <div className="flex flex-wrap justify-between items-center gap-2 text-slate-300">
-                      <span className="font-semibold">Thinking Budget (Legacy 2.5 Pro):</span>
-                      <div className="flex items-center gap-2">
-                        <select
-                          value={
-                            parameters.thinkingBudget === 'auto' || parameters.thinkingBudget === -1
-                              ? 'auto'
-                              : [1024, 2048, 4096, 8192].includes(Number(parameters.thinkingBudget))
-                                ? String(parameters.thinkingBudget)
-                                : 'custom'
-                          }
-                          onChange={(e) => {
-                            const val = e.target.value;
-                            if (val === 'auto') {
-                              updateParameter('thinkingBudget', 'auto');
-                            } else if (val === 'custom') {
-                              updateParameter('thinkingBudget', 2048);
-                            } else {
-                              updateParameter('thinkingBudget', parseInt(val, 10));
-                            }
-                          }}
-                          className="bg-slate-950 text-[#00f0ff] text-xs border border-cyan-500/40 rounded px-2 py-1 font-mono focus:outline-none focus:border-[#00f0ff]"
-                        >
-                          <option value="auto">auto (Default 2048)</option>
-                          <option value="1024">1024 tokens (Min)</option>
-                          <option value="2048">2048 tokens (Default)</option>
-                          <option value="4096">4096 tokens</option>
-                          <option value="8192">8192 tokens</option>
-                          <option value="custom">Custom Budget...</option>
-                        </select>
+                  {parameters.thinkingEnabled && schema.reasoningType === 'google-level' && (
+                    <div className="space-y-2.5 p-3 rounded-lg bg-slate-900/70 border border-slate-800">
+                      <div className="flex justify-between items-center text-slate-300">
+                        <span className="font-semibold">Thinking Level (thinkingConfig.thinkingLevel):</span>
+                        <span className="text-[#00f0ff] uppercase font-bold px-2 py-0.5 rounded bg-cyan-950 border border-cyan-500/40">
+                          {effectiveThinkingLevel.toUpperCase()}
+                        </span>
+                      </div>
 
-                        {parameters.thinkingBudget !== 'auto' && parameters.thinkingBudget !== -1 && (
-                          <input
-                            type="number"
-                            min="1024"
-                            max={maxOutputCap}
-                            step="256"
-                            value={Number(parameters.thinkingBudget) || 2048}
-                            onChange={(e) => {
-                              const raw = parseInt(e.target.value, 10);
-                              if (Number.isFinite(raw)) {
-                                updateParameter('thinkingBudget', Math.min(Math.max(1024, raw), maxOutputCap));
-                              }
-                            }}
-                            className="w-24 bg-slate-950 border border-cyan-500/40 rounded px-2 py-1 text-right text-cyan-300 font-bold focus:outline-none"
-                          />
-                        )}
+                      <input
+                        type="range"
+                        min="0"
+                        max="3"
+                        step="1"
+                        value={currentLevelIndex >= 0 ? currentLevelIndex : 2}
+                        onChange={(e) => handleParamChange('thinkingLevel', thinkingLevels[parseInt(e.target.value, 10)])}
+                        className="w-full h-1.5 bg-slate-800 rounded-lg appearance-none cursor-pointer accent-[#00f0ff]"
+                      />
+
+                      <div className="flex justify-between text-[10px] text-slate-400 font-semibold pt-1 gap-1.5">
+                        {thinkingLevels.map((lvl) => (
+                          <button
+                            key={lvl}
+                            type="button"
+                            onClick={() => handleParamChange('thinkingLevel', lvl)}
+                            className={`flex-1 uppercase px-2 py-1 rounded transition-colors ${
+                              effectiveThinkingLevel === lvl
+                                ? 'text-[#00f0ff] bg-cyan-950 border border-cyan-500/40 font-bold'
+                                : 'text-slate-500 bg-slate-950/60 border border-slate-800 hover:text-slate-300'
+                            }`}
+                          >
+                            {lvl}
+                          </button>
+                        ))}
                       </div>
                     </div>
-                  </div>
-                )}
-              </div>
-            )}
+                  )}
 
-            {/* OpenAI / DeepSeek Reasoning (openai-effort) */}
-            {schema.reasoningType === 'openai-effort' && (
+                  {parameters.thinkingEnabled && schema.reasoningType === 'google-budget' && (
+                    <div className="space-y-3 p-3 rounded-lg bg-slate-900/70 border border-slate-800">
+                      <div className="flex flex-wrap justify-between items-center gap-2 text-slate-300">
+                        <span className="font-semibold">Thinking Budget (Legacy 2.5 Pro):</span>
+                        <div className="flex items-center gap-2">
+                          <select
+                            value={
+                              parameters.thinkingBudget === 'auto' || parameters.thinkingBudget === -1
+                                ? 'auto'
+                                : [1024, 2048, 4096, 8192].includes(Number(parameters.thinkingBudget))
+                                  ? String(parameters.thinkingBudget)
+                                  : 'custom'
+                            }
+                            onChange={(e) => {
+                              const val = e.target.value;
+                              if (val === 'auto') {
+                                handleParamChange('thinkingBudget', 'auto');
+                              } else if (val === 'custom') {
+                                handleParamChange('thinkingBudget', 2048);
+                              } else {
+                                handleParamChange('thinkingBudget', parseInt(val, 10));
+                              }
+                            }}
+                            className="bg-slate-950 text-[#00f0ff] text-xs border border-cyan-500/40 rounded px-2 py-1 font-mono focus:outline-none focus:border-[#00f0ff]"
+                          >
+                            <option value="auto">auto (Default 2048)</option>
+                            <option value="1024">1024 tokens (Min)</option>
+                            <option value="2048">2048 tokens (Default)</option>
+                            <option value="4096">4096 tokens</option>
+                            <option value="8192">8192 tokens</option>
+                            <option value="custom">Custom Budget...</option>
+                          </select>
+
+                          {parameters.thinkingBudget !== 'auto' && parameters.thinkingBudget !== -1 && (
+                            <input
+                              type="number"
+                              min="1024"
+                              max={maxOutputCap}
+                              step="256"
+                              value={Number(parameters.thinkingBudget) || 2048}
+                              onChange={(e) => {
+                                const raw = parseInt(e.target.value, 10);
+                                if (Number.isFinite(raw)) {
+                                  handleParamChange('thinkingBudget', Math.min(Math.max(1024, raw), maxOutputCap));
+                                }
+                              }}
+                              className="w-24 bg-slate-950 border border-cyan-500/40 rounded px-2 py-1 text-right text-cyan-300 font-bold focus:outline-none"
+                            />
+                          )}
+                        </div>
+                      </div>
+                    </div>
+                  )}
+                </div>
+              ) : (
+                <div className="p-3 rounded-lg bg-slate-900/40 border border-slate-800 flex items-center space-x-2 text-slate-500">
+                  <Info size={16} className="shrink-0 text-slate-600" />
+                  <span className="text-[11px]">
+                    Thinking controls are not applicable for this Gemini/Gemma variant. Standard sampling controls remain active.
+                  </span>
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* SECTION 3 (OPENAI ONLY): OPENAI / DEEPSEEK REASONING EFFORT */}
+          {!isGoogle && schema.reasoningType === 'openai-effort' && (
+            <div className="space-y-3.5 bg-slate-950/60 p-4 rounded-xl border border-slate-800/80">
+              <div className="flex items-center justify-between border-b border-slate-800/80 pb-2">
+                <div className="flex items-center space-x-2 text-amber-400">
+                  <Cpu size={15} />
+                  <span className="font-bold uppercase tracking-wider text-slate-200">
+                    3. OpenAI Reasoning Effort
+                  </span>
+                </div>
+                <span className="text-[10px] text-amber-400 font-mono">
+                  payload.reasoning_effort
+                </span>
+              </div>
+
               <div className="space-y-3 pt-1">
-                {/* Reasoning Effort Stepped Slider */}
                 <div className="space-y-2 p-3 rounded-lg bg-slate-900/70 border border-slate-800">
                   <div className="flex justify-between items-center text-slate-300">
-                    <span className="font-semibold">Reasoning Effort:</span>
+                    <span className="font-semibold">reasoning_effort:</span>
                     <span className="text-amber-400 uppercase font-bold px-2 py-0.5 rounded bg-amber-950 border border-amber-500/40">
                       {parameters.reasoningEffort}
                     </span>
@@ -700,7 +776,7 @@ export default function ParameterSettingsModal({
                     max="3"
                     step="1"
                     value={currentEffortIndex >= 0 ? currentEffortIndex : 0}
-                    onChange={(e) => updateParameter('reasoningEffort', reasoningEfforts[parseInt(e.target.value, 10)])}
+                    onChange={(e) => handleParamChange('reasoningEffort', reasoningEfforts[parseInt(e.target.value, 10)])}
                     className="w-full h-1.5 bg-slate-800 rounded-lg appearance-none cursor-pointer accent-amber-400"
                   />
 
@@ -709,7 +785,7 @@ export default function ParameterSettingsModal({
                       <button
                         key={effort}
                         type="button"
-                        onClick={() => updateParameter('reasoningEffort', effort)}
+                        onClick={() => handleParamChange('reasoningEffort', effort)}
                         className={`uppercase px-2 py-0.5 rounded ${
                           parameters.reasoningEffort === effort
                             ? 'text-amber-300 bg-amber-950 border border-amber-500/40 font-bold'
@@ -721,84 +797,25 @@ export default function ParameterSettingsModal({
                     ))}
                   </div>
                 </div>
-
-                {/* Radio Buttons for Reasoning Summary & Mode */}
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-                  <div className="p-2.5 rounded-lg bg-slate-900/70 border border-slate-800 space-y-1.5">
-                    <span className="text-[11px] font-semibold text-slate-300 block">
-                      Reasoning Summary:
-                    </span>
-                    <div className="flex gap-2">
-                      {['unset', 'enabled', 'disabled'].map((val) => (
-                        <label key={val} className="flex items-center space-x-1 cursor-pointer">
-                          <input
-                            type="radio"
-                            name="reasoningSummary"
-                            value={val}
-                            checked={parameters.reasoningSummary === val}
-                            onChange={() => updateParameter('reasoningSummary', val)}
-                            className="accent-amber-400"
-                          />
-                          <span className={`text-[10px] ${parameters.reasoningSummary === val ? 'text-amber-300 font-bold' : 'text-slate-400'}`}>
-                            {val}
-                          </span>
-                        </label>
-                      ))}
-                    </div>
-                  </div>
-
-                  <div className="p-2.5 rounded-lg bg-slate-900/70 border border-slate-800 space-y-1.5">
-                    <span className="text-[11px] font-semibold text-slate-300 block">
-                      Reasoning Mode:
-                    </span>
-                    <div className="flex gap-2">
-                      {['unset', 'parsed', 'raw'].map((val) => (
-                        <label key={val} className="flex items-center space-x-1 cursor-pointer">
-                          <input
-                            type="radio"
-                            name="reasoningMode"
-                            value={val}
-                            checked={parameters.reasoningMode === val}
-                            onChange={() => updateParameter('reasoningMode', val)}
-                            className="accent-amber-400"
-                          />
-                          <span className={`text-[10px] ${parameters.reasoningMode === val ? 'text-amber-300 font-bold' : 'text-slate-400'}`}>
-                            {val}
-                          </span>
-                        </label>
-                      ))}
-                    </div>
-                  </div>
-                </div>
               </div>
-            )}
+            </div>
+          )}
 
-            {/* Sub-variant D: None */}
-            {schema.reasoningType === 'none' && (
-              <div className="p-3 rounded-lg bg-slate-900/40 border border-slate-800 flex items-center space-x-2 text-slate-500">
-                <Info size={16} className="shrink-0 text-slate-600" />
-                <span className="text-[11px]">
-                  Reasoning / Thinking controls are not applicable for this model variant.
-                </span>
-              </div>
-            )}
-          </div>
-
-          {/* SECTION 4: CONTEXT & TOOLS */}
+          {/* SECTION 4: CONTEXT & TRANSPORT */}
           <div className="space-y-3.5 bg-slate-950/60 p-4 rounded-xl border border-slate-800/80">
             <div className="flex items-center justify-between border-b border-slate-800/80 pb-2">
               <div className="flex items-center space-x-2 text-[#00f0ff]">
                 <Globe size={15} />
                 <span className="font-bold uppercase tracking-wider text-slate-200">
-                  4. Context, Grounding & Transport
+                  {isGoogle ? '4. Context, Grounding & Transport' : '4. Stream & Transport Options'}
                 </span>
               </div>
-              <span className="text-[10px] text-slate-500">Tool Bindings</span>
+              <span className="text-[10px] text-slate-500">{isGoogle ? 'Tool Bindings' : 'OpenAI SSE Stream'}</span>
             </div>
 
             <div className="space-y-2.5 pt-1">
-              {/* Google Search Grounding */}
-              {schema.supportsGroundingSearch && (
+              {/* Google Search Grounding (Strictly isolated to isGoogle) */}
+              {isGoogle && schema.supportsGroundingSearch && (
                 <div className="flex items-center justify-between p-2.5 rounded-lg bg-slate-900/70 border border-slate-800">
                   <div>
                     <span className="font-semibold text-slate-200 block">Grounding with Google Search</span>
@@ -807,8 +824,8 @@ export default function ParameterSettingsModal({
                   <label className="relative inline-flex items-center cursor-pointer">
                     <input
                       type="checkbox"
-                      checked={parameters.groundingWithGoogleSearch}
-                      onChange={(e) => updateParameter('groundingWithGoogleSearch', e.target.checked)}
+                      checked={Boolean(parameters.groundingWithGoogleSearch)}
+                      onChange={(e) => handleParamChange('groundingWithGoogleSearch', e.target.checked)}
                       className="sr-only peer"
                     />
                     <div className="w-11 h-6 bg-slate-800 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-slate-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-[#00f0ff]"></div>
@@ -816,8 +833,8 @@ export default function ParameterSettingsModal({
                 </div>
               )}
 
-              {/* URL Context */}
-              {schema.supportsUrlContext && (
+              {/* URL Context (Strictly isolated to isGoogle) */}
+              {isGoogle && schema.supportsUrlContext && (
                 <div className="flex items-center justify-between p-2.5 rounded-lg bg-slate-900/70 border border-slate-800">
                   <div>
                     <span className="font-semibold text-slate-200 block">URL Context Fetching</span>
@@ -826,8 +843,8 @@ export default function ParameterSettingsModal({
                   <label className="relative inline-flex items-center cursor-pointer">
                     <input
                       type="checkbox"
-                      checked={parameters.urlContext}
-                      onChange={(e) => updateParameter('urlContext', e.target.checked)}
+                      checked={Boolean(parameters.urlContext)}
+                      onChange={(e) => handleParamChange('urlContext', e.target.checked)}
                       className="sr-only peer"
                     />
                     <div className="w-11 h-6 bg-slate-800 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-slate-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-[#00f0ff]"></div>
@@ -844,7 +861,7 @@ export default function ParameterSettingsModal({
                 <label className="relative inline-flex items-center cursor-pointer">
                   <input
                     type="checkbox"
-                    checked={parameters.resendFiles}
+                    checked={Boolean(parameters.resendFiles)}
                     onChange={(e) => updateParameter('resendFiles', e.target.checked)}
                     className="sr-only peer"
                   />
@@ -861,7 +878,7 @@ export default function ParameterSettingsModal({
                 <label className="relative inline-flex items-center cursor-pointer">
                   <input
                     type="checkbox"
-                    checked={parameters.disableStreaming}
+                    checked={Boolean(parameters.disableStreaming)}
                     onChange={(e) => updateParameter('disableStreaming', e.target.checked)}
                     className="sr-only peer"
                   />
@@ -871,9 +888,9 @@ export default function ParameterSettingsModal({
             </div>
           </div>
 
-          {/* SECTION 5: GOOGLE AI STUDIO SAFETY SETTINGS */}
+          {/* SECTION 5: GOOGLE AI STUDIO SAFETY SETTINGS (Strictly wrapped in isGoogle guard) */}
           {isGoogle && (
-            <div className="space-y-3.5 bg-slate-950/60 p-4 rounded-xl border border-slate-800/80">
+            <div className="safety-settings space-y-3.5 bg-slate-950/60 p-4 rounded-xl border border-slate-800/80">
               <div className="flex items-center justify-between border-b border-slate-800/80 pb-2">
                 <div className="flex items-center space-x-2 text-[#00f0ff]">
                   <ShieldAlert size={15} />

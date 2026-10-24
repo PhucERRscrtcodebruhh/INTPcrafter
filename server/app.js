@@ -710,16 +710,24 @@ export function buildStableRequestEnvelope({
 
 function extractModelParameters(body = {}) {
   const mp = body.modelParameters || {};
+  const rawTopP = mp.top_p ?? mp.topP ?? body.top_p ?? body.topP;
+  const rawMaxTokens = mp.max_completion_tokens ?? mp.max_tokens ?? mp.maxOutputTokens ?? body.max_completion_tokens ?? body.max_tokens ?? body.maxOutputTokens;
+  const rawFreqPenalty = mp.frequency_penalty ?? mp.frequencyPenalty ?? body.frequency_penalty ?? body.frequencyPenalty;
+  const rawPresPenalty = mp.presence_penalty ?? mp.presencePenalty ?? body.presence_penalty ?? body.presencePenalty;
   return {
     temperature: mp.temperature !== undefined ? parseFloat(mp.temperature) : (body.temperature !== undefined ? parseFloat(body.temperature) : 0.7),
-    topP: mp.topP !== undefined ? parseFloat(mp.topP) : (body.topP !== undefined ? parseFloat(body.topP) : 0.95),
-    maxOutputTokens: mp.maxOutputTokens !== undefined ? parseInt(mp.maxOutputTokens, 10) : (body.maxOutputTokens !== undefined ? parseInt(body.maxOutputTokens, 10) : 4096),
+    topP: rawTopP !== undefined ? parseFloat(rawTopP) : 0.95,
+    top_p: rawTopP !== undefined ? parseFloat(rawTopP) : 0.95,
+    maxOutputTokens: rawMaxTokens !== undefined ? parseInt(rawMaxTokens, 10) : 4096,
+    max_completion_tokens: rawMaxTokens !== undefined ? parseInt(rawMaxTokens, 10) : undefined,
     maxContextTokens: mp.maxContextTokens !== undefined ? parseInt(mp.maxContextTokens, 10) : undefined,
     disableStreaming: Boolean(mp.disableStreaming ?? body.disableStreaming ?? false),
 
     // OpenAI / DeepSeek Specific
-    frequencyPenalty: mp.frequencyPenalty !== undefined ? parseFloat(mp.frequencyPenalty) : (body.frequencyPenalty !== undefined ? parseFloat(body.frequencyPenalty) : 0.0),
-    presencePenalty: mp.presencePenalty !== undefined ? parseFloat(mp.presencePenalty) : (body.presencePenalty !== undefined ? parseFloat(body.presencePenalty) : 0.0),
+    frequencyPenalty: rawFreqPenalty !== undefined ? parseFloat(rawFreqPenalty) : 0.0,
+    frequency_penalty: rawFreqPenalty !== undefined ? parseFloat(rawFreqPenalty) : 0.0,
+    presencePenalty: rawPresPenalty !== undefined ? parseFloat(rawPresPenalty) : 0.0,
+    presence_penalty: rawPresPenalty !== undefined ? parseFloat(rawPresPenalty) : 0.0,
     stopSequences: Array.isArray(mp.stopSequences) ? mp.stopSequences : (Array.isArray(body.stopSequences) ? body.stopSequences : []),
     reasoningEffort: mp.reasoningEffort || body.reasoningEffort || 'auto',
     reasoningSummary: mp.reasoningSummary || body.reasoningSummary || 'unset',

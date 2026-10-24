@@ -249,21 +249,38 @@ export function buildGoogleGenAIConfig(params = {}, modelCapabilities) {
 export function buildOpenAICompatiblePayload(params = {}, modelCapabilities, messages = []) {
   const caps = modelCapabilities || resolveModelCapabilities('openai-compatible', params.model || '');
 
+  const resolvedTopP = typeof params.top_p === 'number'
+    ? params.top_p
+    : (typeof params.topP === 'number' ? params.topP : 0.95);
+  const resolvedMaxTokens = typeof params.max_completion_tokens === 'number'
+    ? params.max_completion_tokens
+    : (typeof params.max_tokens === 'number'
+      ? params.max_tokens
+      : (typeof params.maxOutputTokens === 'number' ? params.maxOutputTokens : caps.defaultMaxTokens));
+  const resolvedFreqPenalty = typeof params.frequency_penalty === 'number'
+    ? params.frequency_penalty
+    : (typeof params.frequencyPenalty === 'number' ? params.frequencyPenalty : 0.0);
+  const resolvedPresPenalty = typeof params.presence_penalty === 'number'
+    ? params.presence_penalty
+    : (typeof params.presencePenalty === 'number' ? params.presencePenalty : 0.0);
+
   const payload = {
     messages,
     temperature: typeof params.temperature === 'number' ? params.temperature : 0.7,
-    top_p: typeof params.topP === 'number' ? params.topP : 0.95,
-    max_tokens: typeof params.maxOutputTokens === 'number' ? params.maxOutputTokens : caps.defaultMaxTokens,
+    top_p: resolvedTopP,
+    max_tokens: resolvedMaxTokens,
     stream: !params.disableStreaming,
   };
 
   if (caps.supportsPenalties) {
-    payload.frequency_penalty = typeof params.frequencyPenalty === 'number' ? params.frequencyPenalty : 0.0;
-    payload.presence_penalty = typeof params.presencePenalty === 'number' ? params.presencePenalty : 0.0;
+    payload.frequency_penalty = resolvedFreqPenalty;
+    payload.presence_penalty = resolvedPresPenalty;
   }
 
   if (params.stopSequences && Array.isArray(params.stopSequences) && params.stopSequences.length > 0) {
     payload.stop = params.stopSequences;
+  } else if (params.stop && Array.isArray(params.stop) && params.stop.length > 0) {
+    payload.stop = params.stop;
   }
 
   if (caps.reasoningType === 'openai-effort' && params.reasoningEffort && params.reasoningEffort !== 'auto') {
