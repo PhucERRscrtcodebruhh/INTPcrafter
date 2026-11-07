@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import ChatCanvas from './components/ChatCanvas';
+import PureChatCanvas from './components/PureChatCanvas';
 import LorebookDashboard from './components/LorebookDashboard';
 import LoginModal from './components/LoginModal';
 import DashboardLanding from './components/dashboard/DashboardLanding';
@@ -50,7 +51,7 @@ const ACTIVE_PROVIDER_KEY = 'storycontainer_active_provider';
 const SINGLE_KEY_MODE_KEY = 'storycontainer_single_key_mode';
 
 export default function App() {
-  const [currentView, setCurrentView] = useState('landing'); // 'landing' | 'studio' | 'lorebook'
+  const [currentView, setCurrentView] = useState('landing'); // 'landing' | 'studio' | 'chat' | 'lorebook'
   const [sessions, setSessions] = useState([]);
   const [activeSessionId, setActiveSessionId] = useState(null);
   const [messages, setMessages] = useState([]);
@@ -825,6 +826,14 @@ export default function App() {
     }
   };
 
+  const handleEnterPureChat = () => {
+    setCurrentView('chat');
+    const token = localStorage.getItem('storycontainer_token');
+    if (!token && !currentUser) {
+      setIsLoginModalOpen(true);
+    }
+  };
+
   const userLabel = String(currentUser?.username || currentUser?.displayName || 'USR').trim() || 'USR';
   const userAvatarSrc = typeof currentUser?.avatar === 'string' && currentUser.avatar.startsWith('data:image/')
     ? currentUser.avatar
@@ -935,6 +944,7 @@ export default function App() {
         {currentView === 'landing' ? (
           <DashboardLanding
             onEnterStudio={handleEnterStudio}
+            onEnterPureChat={handleEnterPureChat}
             currentUser={currentUser}
             onOpenLogin={() => setIsLoginModalOpen(true)}
           />
@@ -977,6 +987,7 @@ export default function App() {
             loreDrawerOpen={loreDrawerOpen}
             setLoreDrawerOpen={setLoreDrawerOpen}
             onNavigateToLorebook={() => setCurrentView('lorebook')}
+            onNavigateToPureChat={() => setCurrentView('chat')}
             onEditMessage={handleEditMessage}
             onDeleteMessage={handleDeleteMessage}
             onRegenerateMessage={handleRegenerateMessage}
@@ -996,6 +1007,30 @@ export default function App() {
             onLanguageChange={handleLanguageChange}
             isSummaryReq={isSummaryReq}
             setIsSummaryReq={setIsSummaryReq}
+          />
+        ) : currentView === 'chat' ? (
+          <PureChatCanvas
+            sessions={sessions}
+            activeSessionId={activeSessionId}
+            onSelectSession={handleSelectSession}
+            onCreateSession={handleCreateSession}
+            onRenameSession={handleRenameSession}
+            onDeleteSession={handleDeleteSession}
+            messages={messages}
+            isLoading={isLoading}
+            isStreaming={isStreaming}
+            streamingText={streamingText}
+            prompt={prompt}
+            setPrompt={setPrompt}
+            onSendChat={handleSendChat}
+            onAbort={handleAbortStream}
+            model={model}
+            setModel={setModel}
+            onEditMessage={handleEditMessage}
+            onDeleteMessage={handleDeleteMessage}
+            onRegenerateMessage={handleRegenerateMessage}
+            keyStats={keyStats}
+            currentUser={currentUser}
           />
         ) : (
           <LorebookDashboard

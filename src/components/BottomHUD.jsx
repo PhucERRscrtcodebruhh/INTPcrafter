@@ -121,6 +121,7 @@ export default function BottomHUD({
   // Dock Action Callbacks
   onOpenSessionDrawer,
   onOpenLorebook,
+  onOpenPureChat,
   onOpenJournal,
   onOpenKeyPool,
   onOpenWorldState,
@@ -561,6 +562,20 @@ export default function BottomHUD({
             </span>
           )}
         </button>
+
+        {/* 1.5 Pure Chat Switch */}
+        {onOpenPureChat && (
+          <button
+            onClick={onOpenPureChat}
+            className={DOCK_BUTTON_CLASS}
+            title="Chuyển sang Giao diện Chat Thuần Túy (Không Crafter)"
+          >
+            <Sparkles size={18} className="group-hover:scale-110 transition-transform text-emerald-400" />
+            <span className="text-[8px] md:text-[9px] font-mono mt-0.5 md:mt-1 text-slate-300 group-hover:text-emerald-200 tracking-tight">
+              Pure Chat
+            </span>
+          </button>
+        )}
 
         {/* 2. Lorebook */}
         <button

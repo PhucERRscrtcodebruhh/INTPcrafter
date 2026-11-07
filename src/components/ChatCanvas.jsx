@@ -47,6 +47,7 @@ export default function ChatCanvas({
   loreDrawerOpen,
   setLoreDrawerOpen,
   onNavigateToLorebook,
+  onNavigateToPureChat,
   onEditMessage,
   onDeleteMessage,
   onRegenerateMessage,
@@ -195,6 +196,7 @@ export default function ChatCanvas({
         onLinkBook={onLinkBook}
         onOpenSessionDrawer={() => setIsSessionDrawerOpen(true)}
         onOpenLorebook={onNavigateToLorebook}
+        onOpenPureChat={onNavigateToPureChat}
         onOpenJournal={() => setIsJournalModalOpen(true)}
         onOpenKeyPool={() => setIsKeyPoolModalOpen(true)}
         onOpenWorldState={() => setIsWorldStateModalOpen(true)}

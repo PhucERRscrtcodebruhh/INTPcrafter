@@ -12,7 +12,8 @@ import {
   ShieldCheck,
   Globe,
   ChevronDown,
-  Sparkles
+  Sparkles,
+  MessageSquare
 } from 'lucide-react';
 
 const LANGUAGES = [
@@ -85,6 +86,18 @@ export default function Navbar({
         >
           <Terminal size={12} />
           <span>Studio</span>
+        </button>
+
+        <button
+          onClick={() => onToggleView('chat')}
+          className={`flex items-center space-x-1 px-2.5 py-0.5 rounded font-medium transition-all ${
+            currentView === 'chat'
+              ? 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/40 shadow-glow-cyan-sm'
+              : 'text-slate-400 hover:text-slate-200'
+          }`}
+        >
+          <MessageSquare size={12} />
+          <span>Chat</span>
         </button>
 
         <button

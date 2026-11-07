@@ -40,7 +40,7 @@ const THEMES = [
  * - Top navigation with Specs Modal and Theme switcher
  * - Bottom CTA: [ 🚀 Go to Chat // Enter Studio ]
  */
-export default function DashboardLanding({ onEnterStudio, currentUser, onOpenLogin }) {
+export default function DashboardLanding({ onEnterStudio, onEnterPureChat, currentUser, onOpenLogin }) {
   // Mini-game solved state (persisted in sessionStorage)
   const [isSolved, setIsSolved] = useState(() => {
     return sessionStorage.getItem(SOLVED_STORAGE_KEY) === 'true';
@@ -239,19 +239,30 @@ export default function DashboardLanding({ onEnterStudio, currentUser, onOpenLog
 
       {/* 3. BOTTOM CALL-TO-ACTION SECTION */}
       <footer className="relative z-30 w-full py-6 px-4 flex flex-col items-center justify-center bg-gradient-to-t from-[#070b14] via-[#070b14]/90 to-transparent">
-        <button
-          onClick={onEnterStudio}
-          className="group relative inline-flex items-center justify-center px-8 sm:px-12 py-3.5 rounded-xl bg-gradient-to-r from-cyan-500/20 via-cyan-400/30 to-violet-500/20 hover:from-cyan-400/40 hover:via-cyan-300/50 hover:to-violet-400/30 border-2 border-cyan-400/60 hover:border-cyan-300 text-cyan-100 hover:text-white font-extrabold text-sm sm:text-base tracking-[0.2em] uppercase transition-all duration-300 shadow-[0_0_25px_rgba(0,240,255,0.35)] hover:shadow-[0_0_40px_rgba(0,240,255,0.65)] hover:scale-105 active:scale-95 cursor-pointer"
-        >
-          {/* Subtle button scanline shimmer */}
-          <span className="absolute inset-0 rounded-xl overflow-hidden pointer-events-none">
-            <span className="absolute inset-0 bg-gradient-to-r from-transparent via-white/20 to-transparent -translate-x-full group-hover:translate-x-full transition-transform duration-1000 ease-in-out" />
-          </span>
+        <div className="flex flex-wrap items-center justify-center gap-3">
+          <button
+            onClick={onEnterStudio}
+            className="group relative inline-flex items-center justify-center px-6 sm:px-10 py-3.5 rounded-xl bg-gradient-to-r from-cyan-500/20 via-cyan-400/30 to-violet-500/20 hover:from-cyan-400/40 hover:via-cyan-300/50 hover:to-violet-400/30 border-2 border-cyan-400/60 hover:border-cyan-300 text-cyan-100 hover:text-white font-extrabold text-xs sm:text-sm tracking-[0.15em] uppercase transition-all duration-300 shadow-[0_0_25px_rgba(0,240,255,0.35)] hover:shadow-[0_0_40px_rgba(0,240,255,0.65)] hover:scale-105 active:scale-95 cursor-pointer"
+          >
+            <span className="absolute inset-0 rounded-xl overflow-hidden pointer-events-none">
+              <span className="absolute inset-0 bg-gradient-to-r from-transparent via-white/20 to-transparent -translate-x-full group-hover:translate-x-full transition-transform duration-1000 ease-in-out" />
+            </span>
+            <Rocket size={16} className="mr-2 text-cyan-300 group-hover:-translate-y-0.5 group-hover:translate-x-0.5 transition-transform" />
+            <span>ENTER STUDIO (CRAFTER)</span>
+            <ChevronRight size={16} className="ml-1.5 text-cyan-300 group-hover:translate-x-1 transition-transform" />
+          </button>
 
-          <Rocket size={18} className="mr-2 text-cyan-300 group-hover:-translate-y-0.5 group-hover:translate-x-0.5 transition-transform" />
-          <span>GO TO CHAT // ENTER STUDIO</span>
-          <ChevronRight size={18} className="ml-2 text-cyan-300 group-hover:translate-x-1 transition-transform" />
-        </button>
+          {onEnterPureChat && (
+            <button
+              onClick={onEnterPureChat}
+              className="group relative inline-flex items-center justify-center px-6 sm:px-10 py-3.5 rounded-xl bg-emerald-950/40 hover:bg-emerald-900/60 border-2 border-emerald-500/50 hover:border-emerald-400 text-emerald-200 hover:text-white font-extrabold text-xs sm:text-sm tracking-[0.15em] uppercase transition-all duration-300 shadow-[0_0_20px_rgba(16,185,129,0.25)] hover:shadow-[0_0_35px_rgba(16,185,129,0.5)] hover:scale-105 active:scale-95 cursor-pointer"
+            >
+              <Sparkles size={16} className="mr-2 text-emerald-400 group-hover:rotate-12 transition-transform" />
+              <span>PURE CHAT (KHÔNG CRAFTER)</span>
+              <ChevronRight size={16} className="ml-1.5 text-emerald-400 group-hover:translate-x-1 transition-transform" />
+            </button>
+          )}
+        </div>
 
         <p className="mt-2.5 text-[10px] text-slate-500 tracking-widest uppercase">
           StoryContainer Engine • AGPL-3.0 License • Always Accessible
